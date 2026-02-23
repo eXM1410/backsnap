@@ -1317,28 +1317,58 @@ pub fn install_timer(calendar: String, delay: String) -> Result<CommandResult, S
         delay = delay,
     );
 
+    // RAPL permissions service — allows non-root CPU power monitoring
+    let rapl_content =
+        "[Unit]\n\
+         Description=backsnap RAPL energy permissions\n\
+         After=local-fs.target\n\
+         \n\
+         [Service]\n\
+         Type=oneshot\n\
+         ExecStart=/bin/sh -c 'for d in /sys/class/powercap/*rapl*; do [ -d \"$d\" ] && chmod -R a+rX \"$d\" || true; done'\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n";
+
     // Write to temp files, then copy with pkexec
     let tmp_svc = "/tmp/backsnap-install.service";
     let tmp_tmr = "/tmp/backsnap-install.timer";
+    let tmp_rapl = "/tmp/backsnap-rapl-perms.service";
     fs::write(tmp_svc, &service_content)
         .map_err(|e| format!("Temp-Datei schreiben: {}", e))?;
     fs::write(tmp_tmr, &timer_content)
         .map_err(|e| format!("Temp-Datei schreiben: {}", e))?;
+    fs::write(tmp_rapl, rapl_content)
+        .map_err(|e| format!("Temp-Datei schreiben: {}", e))?;
 
     let svc_path = format!("/etc/systemd/system/{}", c.sync.service_unit);
     let tmr_path = format!("/etc/systemd/system/{}", c.sync.timer_unit);
+    let rapl_path = "/etc/systemd/system/backsnap-rapl-perms.service";
 
     let r = run_privileged("cp", &[tmp_svc, &svc_path]);
     let _ = fs::remove_file(tmp_svc);
     if !r.success {
         let _ = fs::remove_file(tmp_tmr);
+        let _ = fs::remove_file(tmp_rapl);
         return Err(format!("Service installieren: {}", r.stderr));
     }
 
     let r = run_privileged("cp", &[tmp_tmr, &tmr_path]);
     let _ = fs::remove_file(tmp_tmr);
     if !r.success {
+        let _ = fs::remove_file(tmp_rapl);
         return Err(format!("Timer installieren: {}", r.stderr));
+    }
+
+    // Install RAPL service
+    let r = run_privileged("cp", &[tmp_rapl, rapl_path]);
+    let _ = fs::remove_file(tmp_rapl);
+    if !r.success {
+        // Non-fatal — RAPL is optional for monitoring
+        eprintln!("RAPL-Service installieren (optional): {}", r.stderr);
+    } else {
+        let _ = run_privileged("systemctl", &["enable", "backsnap-rapl-perms.service"]);
+        let _ = run_privileged("systemctl", &["start", "backsnap-rapl-perms.service"]);
     }
 
     let r = run_privileged("systemctl", &["daemon-reload"]);
@@ -1375,6 +1405,10 @@ pub fn uninstall_timer() -> Result<CommandResult, String> {
     let tmr_path = format!("/etc/systemd/system/{}", c.sync.timer_unit);
     let _ = run_privileged("rm", &["-f", &svc_path]);
     let _ = run_privileged("rm", &["-f", &tmr_path]);
+
+    // Also remove RAPL permissions service
+    let _ = run_privileged("systemctl", &["disable", "--now", "backsnap-rapl-perms.service"]);
+    let _ = run_privileged("rm", &["-f", "/etc/systemd/system/backsnap-rapl-perms.service"]);
 
     let _ = run_privileged("systemctl", &["daemon-reload"]);
 
