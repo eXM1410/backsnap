@@ -14,13 +14,8 @@ use tauri::Emitter;
 static SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 static BOOT_INFO_CACHE: OnceLock<Mutex<Option<BootInfo>>> = OnceLock::new();
 static BOOT_VALIDATION_CACHE: OnceLock<Mutex<Option<BootValidation>>> = OnceLock::new();
-static DISK_USAGE_CACHE: OnceLock<Mutex<Option<HashMap<String, u64>>>> = OnceLock::new();
-static DU_COMPUTING: AtomicBool = AtomicBool::new(false);
 
 fn invalidate_caches() {
-    if let Some(c) = DISK_USAGE_CACHE.get() {
-        *c.lock().unwrap() = None;
-    }
     if let Some(c) = BOOT_INFO_CACHE.get() {
         *c.lock().unwrap() = None;
     }
@@ -469,31 +464,11 @@ pub fn get_system_status() -> Result<SystemStatus, String> {
     })
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = 1024.0 * 1024.0;
-    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-    const TIB: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= TIB {
-        format!("{:.1}T", b / TIB)
-    } else if b >= GIB {
-        format!("{:.1}G", b / GIB)
-    } else if b >= MIB {
-        format!("{:.0}M", b / MIB)
-    } else if b >= KIB {
-        format!("{:.0}K", b / KIB)
-    } else {
-        format!("{}B", bytes)
-    }
-}
-
 fn get_disk_info() -> Vec<DiskInfo> {
-    // ── 1. Pool totals from df (bytes) ────────────────────────
     let df = run_cmd(
         "df",
         &[
-            "-B1",
+            "-h",
             "--output=source,fstype,size,used,avail,pcent,target",
             "-t", "btrfs",
             "-t", "vfat",
@@ -516,10 +491,8 @@ fn get_disk_info() -> Vec<DiskInfo> {
         })
         .collect();
 
-    let mut disks = Vec::new();
-    // (mountpoint, device, uuid, pool_size_bytes)
-    let mut btrfs_entries: Vec<(String, String, String, u64)> = Vec::new();
-    let mut pool_avail: HashMap<String, u64> = HashMap::new(); // uuid -> avail bytes
+    let mut disks: Vec<DiskInfo> = Vec::new();
+    let mut btrfs_pools: HashMap<String, usize> = HashMap::new(); // uuid -> index in disks
 
     for line in df.stdout.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -534,114 +507,27 @@ fn get_disk_info() -> Vec<DiskInfo> {
         let uuid = uuid_map.get(&mountpoint).cloned().unwrap_or_default();
         let fstype = parts[1];
 
-        if fstype == "btrfs" {
-            let pool_size = parts[2].parse::<u64>().unwrap_or(0);
-            let avail = parts[4].parse::<u64>().unwrap_or(0);
-            if !uuid.is_empty() {
-                pool_avail.entry(uuid.clone()).or_insert(avail);
+        if fstype == "btrfs" && !uuid.is_empty() {
+            if let Some(&idx) = btrfs_pools.get(&uuid) {
+                // Append submount to existing pool entry
+                let existing = &disks[idx].mountpoint;
+                disks[idx].mountpoint = format!("{}, {}", existing, mountpoint);
+                continue;
             }
-            btrfs_entries.push((mountpoint, parts[0].to_string(), uuid, pool_size));
-        } else {
-            // vfat — use df values directly, format from bytes
-            let size = parts[2].parse::<u64>().unwrap_or(0);
-            let used = parts[3].parse::<u64>().unwrap_or(0);
-            let avail = parts[4].parse::<u64>().unwrap_or(0);
-            let pct = if size > 0 {
-                format!("{}%", (used as f64 / size as f64 * 100.0).round() as u64)
-            } else {
-                "0%".to_string()
-            };
-            disks.push(DiskInfo {
-                name: parts[0].to_string(),
-                fstype: fstype.to_string(),
-                size: format_bytes(size),
-                used: format_bytes(used),
-                avail: format_bytes(avail),
-                use_percent: pct,
-                mountpoint,
-                uuid,
-            });
+            btrfs_pools.insert(uuid.clone(), disks.len());
         }
+
+        disks.push(DiskInfo {
+            name: parts[0].to_string(),
+            fstype: fstype.to_string(),
+            size: parts[2].to_string(),
+            used: parts[3].to_string(),
+            avail: parts[4].to_string(),
+            use_percent: parts[5].to_string(),
+            mountpoint,
+            uuid,
+        });
     }
-
-    // ── 2. Per-subvolume usage: use cached du if available, else df fallback ──
-    if !btrfs_entries.is_empty() {
-        btrfs_entries.sort_by_key(|e| e.0.len());
-
-        let cache = DISK_USAGE_CACHE.get_or_init(|| Mutex::new(None));
-        let guard = cache.lock().unwrap();
-        let du_ready = guard.is_some();
-        let du_map = guard.clone();
-        drop(guard);
-
-        // If no cached du data yet, spawn background computation
-        if !du_ready && !DU_COMPUTING.swap(true, Ordering::SeqCst) {
-            let mounts: Vec<String> = btrfs_entries.iter().map(|e| e.0.clone()).collect();
-            std::thread::spawn(move || {
-                let mut script_parts: Vec<String> = Vec::new();
-                for mount in &mounts {
-                    let excludes: Vec<String> = mounts
-                        .iter()
-                        .filter(|m| {
-                            m.as_str() != mount.as_str()
-                                && m.starts_with(mount.as_str())
-                                && (mount == "/" || m[mount.len()..].starts_with('/'))
-                        })
-                        .map(|m| format!("--exclude='{}'", m))
-                        .collect();
-                    script_parts.push(format!(
-                        "du -sb {} '{}' 2>/dev/null || echo '0\t{}'",
-                        excludes.join(" "),
-                        mount,
-                        mount
-                    ));
-                }
-                let script = script_parts.join("; ");
-                let du = run_cmd("sh", &["-c", &script]);
-                let map: HashMap<String, u64> = du
-                    .stdout
-                    .lines()
-                    .filter_map(|line| {
-                        let mut parts = line.splitn(2, '\t');
-                        let bytes = parts.next()?.trim().parse::<u64>().ok()?;
-                        let path = parts.next()?.trim().to_string();
-                        Some((path, bytes))
-                    })
-                    .collect();
-                if let Some(c) = DISK_USAGE_CACHE.get() {
-                    *c.lock().unwrap() = Some(map);
-                }
-                DU_COMPUTING.store(false, Ordering::SeqCst);
-            });
-        }
-
-        for (mount, name, uuid, pool_size) in &btrfs_entries {
-            let (used_str, pct) = if let Some(ref map) = du_map {
-                // Use precise du values
-                let used = map.get(mount.as_str()).copied().unwrap_or(0);
-                let p = if *pool_size > 0 {
-                    format!("{}%", (used as f64 / *pool_size as f64 * 100.0).round() as u64)
-                } else {
-                    "0%".to_string()
-                };
-                (format_bytes(used), p)
-            } else {
-                // Fallback: show "..." while du is computing
-                ("\u{2026}".to_string(), "\u{2026}".to_string())
-            };
-            disks.push(DiskInfo {
-                name: name.clone(),
-                fstype: "btrfs".to_string(),
-                size: format_bytes(*pool_size),
-                used: used_str,
-                avail: format_bytes(pool_avail.get(uuid).copied().unwrap_or(0)),
-                use_percent: pct,
-                mountpoint: mount.clone(),
-                uuid: uuid.clone(),
-            });
-        }
-    }
-
     disks
 }
 
