@@ -1174,6 +1174,20 @@ pub fn get_sync_log() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub fn get_timer_config() -> Result<TimerConfig, String> {
     let c = cfg();
+
+    // Check if the timer unit file actually exists
+    let cat_check = run_cmd("systemctl", &["cat", &c.sync.timer_unit]);
+    if !cat_check.success {
+        // Timer unit not installed — return empty config
+        return Ok(TimerConfig {
+            enabled: false,
+            calendar: String::new(),
+            randomized_delay: "0".to_string(),
+            last_trigger: None,
+            service_result: None,
+        });
+    }
+
     let active = run_cmd("systemctl", &["is-active", &c.sync.timer_unit]);
     let enabled = active.stdout.trim() == "active";
 

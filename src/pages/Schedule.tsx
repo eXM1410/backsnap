@@ -48,8 +48,12 @@ export default function Schedule() {
     if (!config) return;
     setToggling(true);
     try {
-      await api.setTimerEnabled(!config.enabled);
-      setMessage({ text: config.enabled ? "Timer deaktiviert" : "Timer aktiviert", ok: true });
+      const result = await api.setTimerEnabled(!config.enabled);
+      if (result.success) {
+        setMessage({ text: config.enabled ? "Timer deaktiviert" : "Timer aktiviert", ok: true });
+      } else {
+        setMessage({ text: result.stderr || result.stdout || "Befehl fehlgeschlagen", ok: false });
+      }
     } catch (e: any) {
       setMessage({ text: `Fehler: ${e}`, ok: false });
     }
