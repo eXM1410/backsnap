@@ -215,13 +215,7 @@ export default function Dashboard() {
               {status.disks.map((disk, i) => (
                 <tr key={i} className="border-b border-zinc-800/50">
                   <td className="py-2 font-mono text-xs text-cyan-400">
-                    {disk.mountpoint.includes(', ') ? (
-                      <div className="flex flex-wrap gap-1">
-                        {disk.mountpoint.split(', ').map((m, j) => (
-                          <span key={j} className="bg-zinc-800 px-1.5 py-0.5 rounded text-[11px]">{m}</span>
-                        ))}
-                      </div>
-                    ) : disk.mountpoint}
+                    {disk.mountpoint}
                   </td>
                   <td className="py-2 font-mono text-xs text-zinc-500">
                     {disk.name}

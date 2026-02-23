@@ -13,6 +13,20 @@ use tauri::Emitter;
 
 static SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 static BOOT_INFO_CACHE: OnceLock<Mutex<Option<BootInfo>>> = OnceLock::new();
+static BOOT_VALIDATION_CACHE: OnceLock<Mutex<Option<BootValidation>>> = OnceLock::new();
+static DISK_USAGE_CACHE: OnceLock<Mutex<Option<HashMap<String, u64>>>> = OnceLock::new();
+
+fn invalidate_caches() {
+    if let Some(c) = DISK_USAGE_CACHE.get() {
+        *c.lock().unwrap() = None;
+    }
+    if let Some(c) = BOOT_INFO_CACHE.get() {
+        *c.lock().unwrap() = None;
+    }
+    if let Some(c) = BOOT_VALIDATION_CACHE.get() {
+        *c.lock().unwrap() = None;
+    }
+}
 
 // ─── Data Types ───────────────────────────────────────────────
 
@@ -375,7 +389,7 @@ pub fn get_health() -> Result<HealthCheck, String> {
         if backup_dev_result.success {
             let backup_dev = backup_dev_result.stdout.trim().to_string();
             let backup_efi = derive_efi_partition(&backup_dev);
-            let validation = validate_backup_boot(&backup_efi, &c);
+            let validation = get_cached_boot_validation(&backup_efi, &c);
             // Add boot validation issues to main issues
             for issue in &validation.entry_issues {
                 issues.push(format!("Boot: {}", issue));
@@ -454,11 +468,31 @@ pub fn get_system_status() -> Result<SystemStatus, String> {
     })
 }
 
+fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const TIB: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= TIB {
+        format!("{:.1}T", b / TIB)
+    } else if b >= GIB {
+        format!("{:.1}G", b / GIB)
+    } else if b >= MIB {
+        format!("{:.0}M", b / MIB)
+    } else if b >= KIB {
+        format!("{:.0}K", b / KIB)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
 fn get_disk_info() -> Vec<DiskInfo> {
-    let result = run_cmd(
+    // ── 1. Pool totals from df (bytes) ────────────────────────
+    let df = run_cmd(
         "df",
         &[
-            "-h",
+            "-B1",
             "--output=source,fstype,size,used,avail,pcent,target",
             "-t", "btrfs",
             "-t", "vfat",
@@ -482,45 +516,124 @@ fn get_disk_info() -> Vec<DiskInfo> {
         .collect();
 
     let mut disks = Vec::new();
-    let mut seen_uuids: HashMap<String, usize> = HashMap::new(); // UUID -> index of first entry
+    // (mountpoint, device, uuid, pool_size_bytes)
+    let mut btrfs_entries: Vec<(String, String, String, u64)> = Vec::new();
+    let mut pool_avail: HashMap<String, u64> = HashMap::new(); // uuid -> avail bytes
 
-    for line in result.stdout.lines().skip(1) {
+    for line in df.stdout.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 7 {
-            let mountpoint = parts[6..].join(" ");
+        if parts.len() < 7 {
+            continue;
+        }
+        let mountpoint = parts[6..].join(" ");
+        if mountpoint.starts_with("/tmp/backsnap") {
+            continue;
+        }
 
-            // Filter out temp mounts from backsnap operations
-            if mountpoint.starts_with("/tmp/backsnap") {
-                continue;
+        let uuid = uuid_map.get(&mountpoint).cloned().unwrap_or_default();
+        let fstype = parts[1];
+
+        if fstype == "btrfs" {
+            let pool_size = parts[2].parse::<u64>().unwrap_or(0);
+            let avail = parts[4].parse::<u64>().unwrap_or(0);
+            if !uuid.is_empty() {
+                pool_avail.entry(uuid.clone()).or_insert(avail);
             }
-
-            let uuid = uuid_map.get(&mountpoint).cloned().unwrap_or_default();
-            let fstype = parts[1].to_string();
-
-            // For Btrfs: deduplicate by UUID — show pool total on first entry,
-            // skip duplicate entries (subvols share the same df numbers)
-            if fstype == "btrfs" && !uuid.is_empty() {
-                if let Some(&first_idx) = seen_uuids.get(&uuid) {
-                    // Append this mountpoint to the first entry's mountpoint list
-                    let first: &mut DiskInfo = &mut disks[first_idx];
-                    first.mountpoint = format!("{}, {}", first.mountpoint, mountpoint);
-                    continue;
-                }
-                seen_uuids.insert(uuid.clone(), disks.len());
-            }
-
+            btrfs_entries.push((mountpoint, parts[0].to_string(), uuid, pool_size));
+        } else {
+            // vfat — use df values directly, format from bytes
+            let size = parts[2].parse::<u64>().unwrap_or(0);
+            let used = parts[3].parse::<u64>().unwrap_or(0);
+            let avail = parts[4].parse::<u64>().unwrap_or(0);
+            let pct = if size > 0 {
+                format!("{}%", (used as f64 / size as f64 * 100.0).round() as u64)
+            } else {
+                "0%".to_string()
+            };
             disks.push(DiskInfo {
                 name: parts[0].to_string(),
-                fstype,
-                size: parts[2].to_string(),
-                used: parts[3].to_string(),
-                avail: parts[4].to_string(),
-                use_percent: parts[5].to_string(),
+                fstype: fstype.to_string(),
+                size: format_bytes(size),
+                used: format_bytes(used),
+                avail: format_bytes(avail),
+                use_percent: pct,
                 mountpoint,
                 uuid,
             });
         }
     }
+
+    // ── 2. Per-subvolume actual usage via du (cached) ──────────
+    if !btrfs_entries.is_empty() {
+        btrfs_entries.sort_by_key(|e| e.0.len());
+
+        // Check cache first
+        let cache = DISK_USAGE_CACHE.get_or_init(|| Mutex::new(None));
+        let mut guard = cache.lock().unwrap();
+        let du_map = if let Some(ref cached) = *guard {
+            cached.clone()
+        } else {
+            // Cache miss — run du once for all mounts
+            let all_mounts: Vec<&str> = btrfs_entries.iter().map(|e| e.0.as_str()).collect();
+            let mut script_parts: Vec<String> = Vec::new();
+            for (mount, _, _, _) in &btrfs_entries {
+                let excludes: Vec<String> = all_mounts
+                    .iter()
+                    .filter(|&&m| {
+                        m != mount.as_str()
+                            && m.starts_with(mount.as_str())
+                            && (mount == "/" || m[mount.len()..].starts_with('/'))
+                    })
+                    .map(|m| format!("--exclude='{}'", m))
+                    .collect();
+                script_parts.push(format!(
+                    "du -sb {} '{}' 2>/dev/null || echo '0\t{}'",
+                    excludes.join(" "),
+                    mount,
+                    mount
+                ));
+            }
+            let script = script_parts.join("; ");
+            let du = run_cmd("sh", &["-c", &script]);
+
+            let map: HashMap<String, u64> = du
+                .stdout
+                .lines()
+                .filter_map(|line| {
+                    let mut parts = line.splitn(2, '\t');
+                    let bytes = parts.next()?.trim().parse::<u64>().ok()?;
+                    let path = parts.next()?.trim().to_string();
+                    Some((path, bytes))
+                })
+                .collect();
+            *guard = Some(map.clone());
+            map
+        };
+        drop(guard);
+
+        for (mount, name, uuid, pool_size) in &btrfs_entries {
+            let used = du_map.get(mount.as_str()).copied().unwrap_or(0);
+            let pct = if *pool_size > 0 {
+                format!(
+                    "{}%",
+                    (used as f64 / *pool_size as f64 * 100.0).round() as u64
+                )
+            } else {
+                "0%".to_string()
+            };
+            disks.push(DiskInfo {
+                name: name.clone(),
+                fstype: "btrfs".to_string(),
+                size: format_bytes(*pool_size),
+                used: format_bytes(used),
+                avail: format_bytes(pool_avail.get(uuid).copied().unwrap_or(0)),
+                use_percent: pct,
+                mountpoint: mount.clone(),
+                uuid: uuid.clone(),
+            });
+        }
+    }
+
     disks
 }
 
@@ -862,6 +975,7 @@ pub async fn run_sync(app: tauri::AppHandle) -> Result<CommandResult, String> {
         })?;
 
     SYNC_RUNNING.store(false, Ordering::SeqCst);
+    invalidate_caches();
     result
 }
 
@@ -1075,6 +1189,18 @@ fn parse_boot_entry(content: &str) -> (String, String, String) {
         }
     }
     (title, root_uuid, kernel)
+}
+
+/// Return cached boot validation, running the privileged check at most once per session
+fn get_cached_boot_validation(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
+    let cache = BOOT_VALIDATION_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().unwrap();
+    if let Some(ref v) = *guard {
+        return v.clone();
+    }
+    let v = validate_backup_boot(backup_efi_dev, c);
+    *guard = Some(v.clone());
+    v
 }
 
 /// Validate boot entries on the backup EFI partition — single pkexec call
