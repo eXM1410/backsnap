@@ -169,4 +169,7 @@ export const api = {
     invoke<void>("save_config_cmd", { newConfig }),
   detectDisks: () => invoke<DetectedDisk[]>("detect_disks"),
   resetConfig: () => invoke<AppConfig>("reset_config"),
+  installTimer: (calendar: string, delay: string) =>
+    invoke<CommandResult>("install_timer", { calendar, delay }),
+  uninstallTimer: () => invoke<CommandResult>("uninstall_timer"),
 };

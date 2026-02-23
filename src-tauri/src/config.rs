@@ -78,14 +78,17 @@ pub fn config_path() -> PathBuf {
 // ─── Load / Save ──────────────────────────────────────────────
 
 pub fn load_config() -> Result<AppConfig, String> {
-    let path = config_path();
+    load_config_from(&config_path())
+}
+
+pub fn load_config_from(path: &std::path::Path) -> Result<AppConfig, String> {
     if !path.exists() {
         // Auto-generate on first run
         let config = auto_detect_config();
         save_config(&config)?;
         return Ok(config);
     }
-    let content = fs::read_to_string(&path)
+    let content = fs::read_to_string(path)
         .map_err(|e| format!("Config lesen fehlgeschlagen ({}): {}", path.display(), e))?;
     toml::from_str(&content)
         .map_err(|e| format!("Config-Fehler in {}: {}", path.display(), e))
@@ -214,12 +217,37 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+fn parse_size_to_bytes(size: &str) -> u64 {
+    let s = size.trim();
+    if let Some(val) = s.strip_suffix(" TB") {
+        (val.trim().parse::<f64>().unwrap_or(0.0) * 1_099_511_627_776.0) as u64
+    } else if let Some(val) = s.strip_suffix(" GB") {
+        (val.trim().parse::<f64>().unwrap_or(0.0) * 1_073_741_824.0) as u64
+    } else if let Some(val) = s.strip_suffix(" MB") {
+        val.trim().parse::<u64>().unwrap_or(0) * 1_048_576
+    } else {
+        0
+    }
+}
+
 /// Auto-detect config based on current system
 pub fn auto_detect_config() -> AppConfig {
     let detected = detect_btrfs_disks();
 
     let boot_disk = detected.iter().find(|d| d.is_boot);
-    let backup_disk = detected.iter().find(|d| !d.is_boot);
+    // Smart backup disk selection:
+    // - Exactly 2 btrfs disks: pick the non-boot one
+    // - >2 disks: pick the largest non-boot (user can change in Settings)
+    // - 0 or 1: leave empty
+    let non_boot: Vec<&DetectedDisk> = detected.iter().filter(|d| !d.is_boot).collect();
+    let backup_disk = if non_boot.len() == 1 {
+        Some(non_boot[0])
+    } else if non_boot.len() > 1 {
+        // Pick largest non-boot disk
+        non_boot.into_iter().max_by_key(|d| parse_size_to_bytes(&d.size))
+    } else {
+        None
+    };
 
     let primary_uuid = boot_disk.map(|d| d.uuid.clone()).unwrap_or_default();
     let primary_label = boot_disk
@@ -276,6 +304,14 @@ pub fn auto_detect_config() -> AppConfig {
     // Detect current username for smart excludes
     let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
 
+    // User-writable log path (no root needed)
+    let log_path = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("backsnap")
+        .join("sync.log")
+        .to_string_lossy()
+        .to_string();
+
     AppConfig {
         disks: DiskConfig {
             primary_uuid,
@@ -284,9 +320,9 @@ pub fn auto_detect_config() -> AppConfig {
             backup_label,
         },
         sync: SyncConfig {
-            timer_unit: "nvme-sync.timer".to_string(),
-            service_unit: "nvme-sync.service".to_string(),
-            log_path: "/var/log/backsnap-sync.log".to_string(),
+            timer_unit: "backsnap-sync.timer".to_string(),
+            service_unit: "backsnap-sync.service".to_string(),
+            log_path,
             log_max_lines: 2000,
             mount_options: "compress=zstd,noatime".to_string(),
             mount_base: "/mnt/backsnap".to_string(),

@@ -36,7 +36,14 @@ pub fn run() {
             save_config_cmd,
             detect_disks,
             reset_config,
+            install_timer,
+            uninstall_timer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Headless sync for systemd/CLI — no GUI, no Tauri runtime
+pub fn run_sync_cli(config_path: Option<String>) -> i32 {
+    commands::run_sync_headless(config_path)
 }

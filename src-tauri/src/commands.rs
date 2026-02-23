@@ -123,9 +123,22 @@ fn run_cmd(cmd: &str, args: &[&str]) -> CommandResult {
 }
 
 fn run_privileged(cmd: &str, args: &[&str]) -> CommandResult {
-    let mut full_args = vec![cmd];
-    full_args.extend_from_slice(args);
-    run_cmd("pkexec", &full_args)
+    if is_root() {
+        // Already root (e.g. systemd service) — run directly
+        run_cmd(cmd, args)
+    } else {
+        let mut full_args = vec![cmd];
+        full_args.extend_from_slice(args);
+        run_cmd("pkexec", &full_args)
+    }
+}
+
+fn is_root() -> bool {
+    Command::new("id")
+        .args(["-u"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+        .unwrap_or(false)
 }
 
 fn read_proc(path: &str) -> String {
@@ -910,6 +923,36 @@ fn do_sync(app: &tauri::AppHandle) -> Result<CommandResult, String> {
 }
 
 fn derive_efi_partition(btrfs_dev: &str) -> String {
+    // Find parent disk, then locate EFI System Partition by GUID
+    let parent = Command::new("lsblk")
+        .args(["-nro", "PKNAME", btrfs_dev])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    if !parent.is_empty() {
+        // Look for EFI System Partition (GUID c12a7328-f81f-11d2-ba4b-00a0c93ec93b)
+        let result = Command::new("lsblk")
+            .args(["-nro", "NAME,PARTTYPE", &format!("/dev/{}", parent)])
+            .output();
+        if let Ok(o) = result {
+            if o.status.success() {
+                for line in String::from_utf8_lossy(&o.stdout).lines() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let parttype = parts[1].to_lowercase();
+                        if parttype == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" {
+                            return format!("/dev/{}", parts[0]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: derive from device name (strip trailing digits, append 1)
     if let Some(pos) = btrfs_dev.rfind('p') {
         if btrfs_dev[pos + 1..].chars().all(|c| c.is_ascii_digit()) {
             return format!("{}1", &btrfs_dev[..=pos]);
@@ -1206,4 +1249,309 @@ pub fn get_btrfs_usage() -> Result<String, String> {
     } else {
         Err(result.stderr)
     }
+}
+
+// ─── Systemd Timer Install/Uninstall ──────────────────────────
+
+fn validate_timer_value(val: &str) -> Result<(), String> {
+    if val.is_empty() || val.len() > 128 {
+        return Err("Timer-Wert ungültig: leer oder zu lang".to_string());
+    }
+    let forbidden = ['`', '$', '\\', '|', ';', '&', '<', '>', '\n', '\r', '\0', '\'', '"'];
+    if val.chars().any(|c| forbidden.contains(&c)) {
+        return Err("Timer-Wert enthält ungültige Zeichen".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn install_timer(calendar: String, delay: String) -> Result<CommandResult, String> {
+    validate_timer_value(&calendar)?;
+    validate_timer_value(&delay)?;
+
+    let c = cfg();
+
+    // Determine binary path
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Binary-Pfad nicht ermittelt: {}", e))?
+        .to_string_lossy()
+        .to_string();
+
+    let config_path = config::config_path().to_string_lossy().to_string();
+
+    let service_content = format!(
+        "[Unit]\n\
+         Description=backsnap System Sync\n\
+         After=local-fs.target\n\
+         \n\
+         [Service]\n\
+         Type=oneshot\n\
+         ExecStart={exe} --sync --config {config}\n\
+         Nice=19\n\
+         IOSchedulingClass=idle\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n",
+        exe = exe,
+        config = config_path,
+    );
+
+    let timer_content = format!(
+        "[Unit]\n\
+         Description=backsnap Sync Timer\n\
+         \n\
+         [Timer]\n\
+         OnCalendar={calendar}\n\
+         RandomizedDelaySec={delay}\n\
+         Persistent=true\n\
+         \n\
+         [Install]\n\
+         WantedBy=timers.target\n",
+        calendar = calendar,
+        delay = delay,
+    );
+
+    // Write to temp files, then copy with pkexec
+    let tmp_svc = "/tmp/backsnap-install.service";
+    let tmp_tmr = "/tmp/backsnap-install.timer";
+    fs::write(tmp_svc, &service_content)
+        .map_err(|e| format!("Temp-Datei schreiben: {}", e))?;
+    fs::write(tmp_tmr, &timer_content)
+        .map_err(|e| format!("Temp-Datei schreiben: {}", e))?;
+
+    let svc_path = format!("/etc/systemd/system/{}", c.sync.service_unit);
+    let tmr_path = format!("/etc/systemd/system/{}", c.sync.timer_unit);
+
+    let r = run_privileged("cp", &[tmp_svc, &svc_path]);
+    let _ = fs::remove_file(tmp_svc);
+    if !r.success {
+        let _ = fs::remove_file(tmp_tmr);
+        return Err(format!("Service installieren: {}", r.stderr));
+    }
+
+    let r = run_privileged("cp", &[tmp_tmr, &tmr_path]);
+    let _ = fs::remove_file(tmp_tmr);
+    if !r.success {
+        return Err(format!("Timer installieren: {}", r.stderr));
+    }
+
+    let r = run_privileged("systemctl", &["daemon-reload"]);
+    if !r.success {
+        return Err(format!("daemon-reload: {}", r.stderr));
+    }
+
+    let r = run_privileged("systemctl", &["enable", "--now", &c.sync.timer_unit]);
+    if !r.success {
+        return Err(format!("Timer aktivieren: {}", r.stderr));
+    }
+
+    Ok(CommandResult {
+        success: true,
+        stdout: format!(
+            "Timer {} installiert und aktiviert.\nIntervall: {}, Verzögerung: {}\nBinary: {}\nConfig: {}",
+            c.sync.timer_unit, calendar, delay, exe, config_path
+        ),
+        stderr: String::new(),
+        exit_code: 0,
+    })
+}
+
+#[tauri::command]
+pub fn uninstall_timer() -> Result<CommandResult, String> {
+    let c = cfg();
+
+    // Stop and disable
+    let _ = run_privileged("systemctl", &["disable", "--now", &c.sync.timer_unit]);
+    let _ = run_privileged("systemctl", &["stop", &c.sync.service_unit]);
+
+    // Remove unit files
+    let svc_path = format!("/etc/systemd/system/{}", c.sync.service_unit);
+    let tmr_path = format!("/etc/systemd/system/{}", c.sync.timer_unit);
+    let _ = run_privileged("rm", &["-f", &svc_path]);
+    let _ = run_privileged("rm", &["-f", &tmr_path]);
+
+    let _ = run_privileged("systemctl", &["daemon-reload"]);
+
+    Ok(CommandResult {
+        success: true,
+        stdout: format!("Timer {} deinstalliert", c.sync.timer_unit),
+        stderr: String::new(),
+        exit_code: 0,
+    })
+}
+
+// ─── Headless CLI Sync ────────────────────────────────────────
+
+pub fn run_sync_headless(config_path_override: Option<String>) -> i32 {
+    let c = if let Some(path) = config_path_override {
+        match config::load_config_from(std::path::Path::new(&path)) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("backsnap: Config-Fehler: {}", e);
+                return 1;
+            }
+        }
+    } else {
+        cfg()
+    };
+
+    // Ensure log directory exists
+    if let Some(parent) = std::path::Path::new(&c.sync.log_path).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let start_time = Instant::now();
+    rotate_log(&c.sync.log_path, c.sync.log_max_lines);
+
+    println!("backsnap: Preflight-Check...");
+
+    if !cmd_exists("rsync") {
+        eprintln!("backsnap: rsync nicht installiert");
+        return 1;
+    }
+
+    let ctx = match detect_sync_direction(&c) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("backsnap: {}", e);
+            sync_log(&c.sync.log_path, &format!("CLI FEHLER: {}", e));
+            return 1;
+        }
+    };
+
+    sync_log(
+        &c.sync.log_path,
+        &format!("=== Sync Start (CLI): {} ===", ctx.direction),
+    );
+    println!("backsnap: Richtung: {}", ctx.direction);
+
+    let total_phases = c.sync.subvolumes.len() + if c.boot.sync_enabled { 1 } else { 0 };
+
+    // ── Sync subvolumes ──
+    for (i, sv) in c.sync.subvolumes.iter().enumerate() {
+        let phase = i + 1;
+        let mnt = format!("{}-{}", ctx.mount_base, sv.name);
+        println!(
+            "backsnap: [{}/{}] {} ({}) synchronisieren...",
+            phase, total_phases, sv.name, sv.source
+        );
+        sync_log(
+            &c.sync.log_path,
+            &format!("Phase {}/{}: Sync {} ...", phase, total_phases, sv.source),
+        );
+
+        if let Err(e) = mount_subvol(&ctx.backup_dev, &mnt, &sv.subvol, &c.sync.mount_options) {
+            eprintln!("backsnap: Mount-Fehler {}: {}", sv.subvol, e);
+            sync_log(
+                &c.sync.log_path,
+                &format!("FEHLER mount {}: {}", sv.subvol, e),
+            );
+            return 1;
+        }
+
+        let excludes: Vec<String> = if sv.source == "/" {
+            c.sync.system_excludes.clone()
+        } else if sv.source == "/home/" || sv.source == "/home" {
+            let mut exc = c.sync.home_excludes.clone();
+            if c.sync.extra_excludes_on_primary && ctx.is_primary_boot {
+                exc.extend(c.sync.home_extra_excludes.clone());
+            }
+            exc
+        } else {
+            Vec::new()
+        };
+
+        let src = if sv.source.ends_with('/') {
+            sv.source.clone()
+        } else {
+            format!("{}/", sv.source)
+        };
+
+        match run_rsync(&src, &format!("{}/", mnt), &excludes, sv.delete) {
+            Ok(r) => {
+                let stats: Vec<&str> = r
+                    .stdout
+                    .lines()
+                    .filter(|l| l.contains("bytes") || l.contains("transferred"))
+                    .collect();
+                println!("backsnap: {} OK. {}", sv.name, stats.join(" | "));
+                sync_log(
+                    &c.sync.log_path,
+                    &format!("{} OK. {}", sv.name, stats.join(" | ")),
+                );
+            }
+            Err(e) => {
+                safe_umount(&mnt);
+                eprintln!("backsnap: Sync-Fehler {}: {}", sv.name, e);
+                sync_log(
+                    &c.sync.log_path,
+                    &format!("FEHLER {}-Sync: {}", sv.name, e),
+                );
+                return 1;
+            }
+        }
+        safe_umount(&mnt);
+    }
+
+    // ── Boot sync ──
+    if c.boot.sync_enabled {
+        println!(
+            "backsnap: [{}/{}] Boot synchronisieren...",
+            total_phases, total_phases
+        );
+        sync_log(
+            &c.sync.log_path,
+            &format!("Phase {}/{}: Sync /boot ...", total_phases, total_phases),
+        );
+
+        let backup_efi = derive_efi_partition(&ctx.backup_dev);
+        let boot_mnt = "/tmp/backsnap-boot";
+        let _ = run_privileged("mkdir", &["-p", boot_mnt]);
+
+        let mount_res = run_privileged("mount", &[&backup_efi, boot_mnt]);
+        if mount_res.success {
+            match run_rsync("/boot/", &format!("{}/", boot_mnt), &c.boot.excludes, false) {
+                Ok(_) => {
+                    println!("backsnap: Boot OK.");
+                    sync_log(&c.sync.log_path, "Boot OK.");
+                }
+                Err(e) => {
+                    println!("backsnap: WARNUNG Boot-Sync: {}", e);
+                    sync_log(
+                        &c.sync.log_path,
+                        &format!("WARNUNG Boot-Sync: {}", e),
+                    );
+                }
+            }
+        } else {
+            println!(
+                "backsnap: WARNUNG: Konnte EFI {} nicht mounten",
+                backup_efi
+            );
+            sync_log(
+                &c.sync.log_path,
+                &format!(
+                    "WARNUNG: Konnte Backup-EFI {} nicht mounten: {}",
+                    backup_efi, mount_res.stderr
+                ),
+            );
+        }
+        safe_umount(boot_mnt);
+    }
+
+    let elapsed = start_time.elapsed().as_secs();
+    let duration_str = format_duration(elapsed);
+    println!(
+        "backsnap: Sync fertig: {} (Dauer: {})",
+        ctx.direction, duration_str
+    );
+    sync_log(
+        &c.sync.log_path,
+        &format!(
+            "=== Sync fertig (CLI): {} (Dauer: {}) ===",
+            ctx.direction, duration_str
+        ),
+    );
+
+    0
 }
