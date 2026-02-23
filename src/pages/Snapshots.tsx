@@ -242,9 +242,9 @@ export default function Snapshots() {
                       <Badge
                         color={
                           snap.snap_type === "pre"
-                            ? "yellow"
+                            ? "green"
                             : snap.snap_type === "post"
-                              ? "green"
+                              ? "yellow"
                               : "zinc"
                         }
                       >
