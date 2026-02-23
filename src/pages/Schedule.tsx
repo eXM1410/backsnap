@@ -113,8 +113,8 @@ export default function Schedule() {
   return (
     <div className="p-8">
       <PageHeader
-        title="Zeitplan"
-        description="Automatische Sync-Intervalle konfigurieren"
+        title="Sync-Zeitplan"
+        description="Automatischen Sync auf die Backup-NVMe konfigurieren"
       />
 
       {/* Message */}

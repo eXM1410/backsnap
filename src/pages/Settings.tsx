@@ -226,7 +226,7 @@ export default function Settings() {
             color={config.boot.sync_enabled ? "emerald" : "zinc"}
           />
           <SummaryItem
-            label="Zeitplan"
+            label="Sync-Zeitplan"
             value={config.sync.timer_unit}
             detail="Automatischer Sync"
           />

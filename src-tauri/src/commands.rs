@@ -666,7 +666,7 @@ pub fn get_subvolumes() -> Result<Vec<SubvolumeInfo>, String> {
 pub fn get_snapshots(config: String) -> Result<Vec<Snapshot>, String> {
     validate_config(&config)?;
 
-    let result = run_cmd("snapper", &["-c", &config, "list", "--csvout"]);
+    let result = run_cmd("snapper", &["--csvout", "-c", &config, "list"]);
     if !result.success {
         return Err(format!("snapper error: {}", result.stderr));
     }

@@ -26,7 +26,7 @@ const nav = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/snapshots", icon: Camera, label: "Snapshots" },
   { to: "/sync", icon: RefreshCw, label: "NVMe Sync" },
-  { to: "/schedule", icon: Clock, label: "Zeitplan" },
+  { to: "/schedule", icon: Clock, label: "Sync-Zeitplan" },
   { to: "/monitor", icon: Activity, label: "Monitor" },
   { to: "/disks", icon: HardDrive, label: "Disks" },
   { to: "/logs", icon: Terminal, label: "Logs" },
