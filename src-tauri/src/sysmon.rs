@@ -119,10 +119,18 @@ struct SensorPaths {
     use_nvidia_smi: bool,
 }
 
+struct CachedStatic {
+    cpu_model: String,
+    cores: u32,
+    threads: u32,
+    gpu_name: String,
+}
+
 struct MonitorState {
     prev_cpu_total: CpuTimes,
     prev_cpu_cores: Vec<CpuTimes>,
     sensors: SensorPaths,
+    cached: CachedStatic,
 }
 
 static STATE: std::sync::OnceLock<Mutex<Option<MonitorState>>> = std::sync::OnceLock::new();
@@ -675,17 +683,17 @@ fn read_rapl_power(rapl: &mut RaplState) -> Option<f64> {
     None // Need at least 2 reads
 }
 
-fn read_battery(sensors: &SensorPaths) -> Option<BatteryInfo> {
-    if !sensors.bat_power_path.is_empty() {
-        if let Some(uw) = read_i64(&sensors.bat_power_path) {
+fn read_battery_from_paths(power_path: &str, current_path: &str, voltage_path: &str) -> Option<BatteryInfo> {
+    if !power_path.is_empty() {
+        if let Some(uw) = read_i64(power_path) {
             return Some(BatteryInfo {
                 power_watts: uw as f64 / 1e6,
             });
         }
-    } else if !sensors.bat_current_path.is_empty() && !sensors.bat_voltage_path.is_empty() {
+    } else if !current_path.is_empty() && !voltage_path.is_empty() {
         if let (Some(ua), Some(uv)) = (
-            read_i64(&sensors.bat_current_path),
-            read_i64(&sensors.bat_voltage_path),
+            read_i64(current_path),
+            read_i64(voltage_path),
         ) {
             return Some(BatteryInfo {
                 power_watts: (ua as f64 * uv as f64) / 1e12,
@@ -701,24 +709,33 @@ pub fn read_system_monitor() -> SystemMonitorData {
     let state_mutex = get_state();
     let mut guard = state_mutex.lock().unwrap();
 
-    // Initialize on first call
+    // Initialize on first call — detect sensors and cache static info
     if guard.is_none() {
         let sensors = detect_sensors_all();
         let (total, cores) = read_cpu_times_all().unwrap_or_default();
+        let (cores_count, threads) = get_cpu_count();
+        let gpu_name = read_gpu_name(&sensors.gpu_drm_dir);
+        let cpu_model = get_cpu_model();
+
         *guard = Some(MonitorState {
             prev_cpu_total: total,
             prev_cpu_cores: cores,
             sensors,
+            cached: CachedStatic {
+                cpu_model: cpu_model.clone(),
+                cores: cores_count,
+                threads,
+                gpu_name: gpu_name.clone(),
+            },
         });
 
-        // First call: return data without CPU usage (need delta)
+        // Release lock before returning
         drop(guard);
-        let (memory, swap) = read_meminfo();
-        let (cores_count, threads) = get_cpu_count();
 
+        let (memory, swap) = read_meminfo();
         return SystemMonitorData {
             cpu: CpuInfo {
-                model: get_cpu_model(),
+                model: cpu_model,
                 cores: cores_count,
                 threads,
                 usage_percent: 0.0,
@@ -728,7 +745,10 @@ pub fn read_system_monitor() -> SystemMonitorData {
             memory,
             swap,
             cpu_sensor: CpuSensor::default(),
-            gpu: GpuInfo::default(),
+            gpu: GpuInfo {
+                name: gpu_name,
+                ..Default::default()
+            },
             load: read_loadavg(),
             uptime: read_uptime_info(),
             battery: None,
@@ -737,7 +757,7 @@ pub fn read_system_monitor() -> SystemMonitorData {
 
     let state = guard.as_mut().unwrap();
 
-    // Read CPU
+    // Read CPU delta (requires prev state)
     let (cur_total, cur_cores) = read_cpu_times_all().unwrap_or_default();
     let cpu_pct = cpu_usage(&state.prev_cpu_total, &cur_total);
 
@@ -751,43 +771,61 @@ pub fn read_system_monitor() -> SystemMonitorData {
     state.prev_cpu_total = cur_total;
     state.prev_cpu_cores = cur_cores;
 
-    // Read memory
-    let (memory, swap) = read_meminfo();
-
-    // CPU sensor
-    let cpu_temp = if !state.sensors.cpu_temp_input.is_empty() {
-        read_i64(&state.sensors.cpu_temp_input).map(|mdeg| mdeg as f64 / 1000.0)
-    } else {
-        None
-    };
+    // RAPL power (needs mutable state for prev_energy)
     let cpu_power = read_rapl_power(&mut state.sensors.rapl);
     let rapl_no_perm = state.sensors.rapl.no_permission;
 
-    // GPU
-    let gpu_temp = if !state.sensors.gpu_temp_path.is_empty() {
-        read_i64(&state.sensors.gpu_temp_path).map(|mdeg| mdeg as f64 / 1000.0)
+    // Copy out what we need from state, then DROP the lock
+    let cpu_temp_path = state.sensors.cpu_temp_input.clone();
+    let gpu_temp_path = state.sensors.gpu_temp_path.clone();
+    let gpu_power_path = state.sensors.gpu_power_path.clone();
+    let gpu_drm_dir = state.sensors.gpu_drm_dir.clone();
+    let cached = CachedStatic {
+        cpu_model: state.cached.cpu_model.clone(),
+        cores: state.cached.cores,
+        threads: state.cached.threads,
+        gpu_name: state.cached.gpu_name.clone(),
+    };
+    let bat_sensors_clone = (
+        state.sensors.bat_power_path.clone(),
+        state.sensors.bat_current_path.clone(),
+        state.sensors.bat_voltage_path.clone(),
+    );
+    drop(guard);
+
+    // --- Everything below runs WITHOUT the lock held ---
+
+    let (memory, swap) = read_meminfo();
+
+    // CPU sensor
+    let cpu_temp = if !cpu_temp_path.is_empty() {
+        read_i64(&cpu_temp_path).map(|mdeg| mdeg as f64 / 1000.0)
     } else {
         None
     };
-    let gpu_power = if !state.sensors.gpu_power_path.is_empty() {
-        read_u64(&state.sensors.gpu_power_path).map(|uw| uw as f64 / 1e6)
+
+    // GPU (all sysfs reads, no subprocess)
+    let gpu_temp = if !gpu_temp_path.is_empty() {
+        read_i64(&gpu_temp_path).map(|mdeg| mdeg as f64 / 1000.0)
     } else {
         None
     };
-    let gpu_name = read_gpu_name(&state.sensors.gpu_drm_dir);
-    let (vram_total, vram_used) = read_gpu_vram(&state.sensors.gpu_drm_dir);
-    let gpu_busy = read_gpu_busy(&state.sensors.gpu_drm_dir);
+    let gpu_power = if !gpu_power_path.is_empty() {
+        read_u64(&gpu_power_path).map(|uw| uw as f64 / 1e6)
+    } else {
+        None
+    };
+    let (vram_total, vram_used) = read_gpu_vram(&gpu_drm_dir);
+    let gpu_busy = read_gpu_busy(&gpu_drm_dir);
 
-    // Battery
-    let battery = read_battery(&state.sensors);
-
-    let (cores_count, threads) = get_cpu_count();
+    // Battery (use cloned paths)
+    let battery = read_battery_from_paths(&bat_sensors_clone.0, &bat_sensors_clone.1, &bat_sensors_clone.2);
 
     SystemMonitorData {
         cpu: CpuInfo {
-            model: get_cpu_model(),
-            cores: cores_count,
-            threads,
+            model: cached.cpu_model,
+            cores: cached.cores,
+            threads: cached.threads,
             usage_percent: cpu_pct,
             per_core_usage: per_core,
             frequency_mhz: get_cpu_freq(),
@@ -800,7 +838,7 @@ pub fn read_system_monitor() -> SystemMonitorData {
             power_no_permission: rapl_no_perm,
         },
         gpu: GpuInfo {
-            name: gpu_name,
+            name: cached.gpu_name,
             temp_celsius: gpu_temp,
             power_watts: gpu_power,
             vram_total_mib: vram_total,

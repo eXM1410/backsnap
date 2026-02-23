@@ -85,7 +85,7 @@ export default function Schedule() {
 
   if (loading) return <div className="p-8"><Loading /></div>;
 
-  // Derive sync items from config
+  // Derive sync items from config — only actual sync targets
   const syncItems = appConfig
     ? [
         ...appConfig.sync.subvolumes.map((sv) => ({
@@ -96,13 +96,15 @@ export default function Schedule() {
           label: "Boot/EFI",
           included: appConfig.boot.sync_enabled,
         },
-        ...appConfig.sync.home_extra_excludes.map((exc) => ({
-          label: exc.split("/").pop() || exc,
-          included: false,
-        })),
-        { label: "Cache", included: false },
       ]
     : [];
+
+  const excludeCount = appConfig
+    ? appConfig.sync.system_excludes.length +
+      appConfig.sync.home_excludes.length +
+      appConfig.sync.home_extra_excludes.length +
+      appConfig.boot.excludes.length
+    : 0;
 
   return (
     <div className="p-8">
@@ -232,6 +234,13 @@ export default function Schedule() {
               <SyncItem key={i} label={item.label} included={item.included} />
             ))}
           </div>
+          {appConfig && excludeCount > 0 && (
+            <div className="mt-4 pt-3 border-t border-zinc-800">
+              <p className="text-xs text-zinc-500">
+                {excludeCount} Excludes aktiv — konfigurierbar unter Einstellungen
+              </p>
+            </div>
+          )}
         </Card>
       </div>
 

@@ -75,7 +75,7 @@ export default function SystemMonitor() {
 
   useEffect(() => {
     refresh();
-    intervalRef.current = window.setInterval(refresh, 1500);
+    intervalRef.current = window.setInterval(refresh, 3000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
