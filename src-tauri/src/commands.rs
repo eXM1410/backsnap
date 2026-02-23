@@ -14,12 +14,16 @@ use tauri::Emitter;
 static SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 static BOOT_INFO_CACHE: OnceLock<Mutex<Option<BootInfo>>> = OnceLock::new();
 static BOOT_VALIDATION_CACHE: OnceLock<Mutex<Option<BootValidation>>> = OnceLock::new();
+static BTRFS_USAGE_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn invalidate_caches() {
     if let Some(c) = BOOT_INFO_CACHE.get() {
         *c.lock().unwrap() = None;
     }
     if let Some(c) = BOOT_VALIDATION_CACHE.get() {
+        *c.lock().unwrap() = None;
+    }
+    if let Some(c) = BTRFS_USAGE_CACHE.get() {
         *c.lock().unwrap() = None;
     }
 }
@@ -1694,11 +1698,17 @@ pub fn set_timer_enabled(enabled: bool) -> Result<CommandResult, String> {
 
 #[tauri::command]
 pub fn get_btrfs_usage() -> Result<String, String> {
+    let cache = BTRFS_USAGE_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().unwrap();
+    if let Some(ref cached) = *guard {
+        return Ok(cached.clone());
+    }
     let result = run_privileged(
         "btrfs",
         &["filesystem", "usage", "/", "--human-readable"],
     );
     if result.success {
+        *guard = Some(result.stdout.clone());
         Ok(result.stdout)
     } else {
         Err(result.stderr)
