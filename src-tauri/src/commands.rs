@@ -1053,97 +1053,29 @@ fn parse_boot_entry(content: &str) -> (String, String, String) {
     (title, root_uuid, kernel)
 }
 
-/// Read boot entries from an ESP path (reads loader/entries/*.conf)
-fn read_boot_entries(esp_path: &str) -> Vec<BootEntryInfo> {
-    let entries_dir = format!("{}/loader/entries", esp_path);
-    let mut entries = Vec::new();
-
-    let dir = match fs::read_dir(&entries_dir) {
-        Ok(d) => d,
-        Err(_) => return entries,
-    };
-
-    for entry in dir.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("conf") {
-            continue;
-        }
-        let id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        if let Ok(content) = fs::read_to_string(&path) {
-            let (title, root_uuid, kernel) = parse_boot_entry(&content);
-            let disk = if !root_uuid.is_empty() {
-                let c = cfg();
-                if root_uuid == c.disks.primary_uuid {
-                    "Primary".to_string()
-                } else if root_uuid == c.disks.backup_uuid {
-                    "Backup".to_string()
-                } else {
-                    "Unknown".to_string()
-                }
-            } else {
-                "Unknown".to_string()
-            };
-            entries.push(BootEntryInfo {
-                title,
-                id,
-                root_uuid,
-                kernel,
-                disk,
-            });
-        }
-    }
-    entries
-}
-
-/// Get the current boot entry from bootctl
-fn get_current_boot_entry() -> String {
-    let result = run_cmd("bootctl", &["status"]);
-    for line in result.stdout.lines() {
-        let trimmed = line.trim();
-        if let Some(val) = trimmed.strip_prefix("Current Entry:") {
-            return val.trim().to_string();
-        }
-    }
-    // Fallback: try from kernel cmdline
-    fs::read_to_string("/proc/cmdline")
-        .unwrap_or_default()
-        .split_whitespace()
-        .find(|p| p.starts_with("BOOT_IMAGE="))
-        .map(|p| p.trim_start_matches("BOOT_IMAGE=").to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// Get the bootloader version from an ESP path
-fn get_bootloader_version(esp_path: &str) -> String {
-    // Try reading the bootloader binary version via file command
-    let efi_path = format!("{}/EFI/systemd/systemd-bootx64.efi", esp_path);
-    if Path::new(&efi_path).exists() {
-        // Use bootctl to get version if it's the active ESP
-        let result = run_cmd("bootctl", &["status"]);
-        for line in result.stdout.lines() {
-            let trimmed = line.trim();
-            if let Some(val) = trimmed.strip_prefix("Product:") {
-                return val.trim().to_string();
-            }
-        }
-        "systemd-boot (Version unbekannt)".to_string()
-    } else {
-        String::new()
-    }
-}
-
-/// Validate boot entries on the backup EFI partition
+/// Validate boot entries on the backup EFI partition — single pkexec call
 fn validate_backup_boot(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
     let mnt = "/tmp/backsnap-boot-validate";
-    let _ = run_privileged("mkdir", &["-p", mnt]);
-    let mount_res = run_privileged("mount", &["-o", "ro", backup_efi_dev, mnt]);
+    // Single privileged script: mount, gather info, unmount
+    let script = format!(
+        "mkdir -p {mnt} && \
+         mount -o ro {dev} {mnt} 2>&1 && \
+         echo '===MOUNTED===' && \
+         test -f {mnt}/EFI/systemd/systemd-bootx64.efi && echo 'BL=yes' || echo 'BL=no'; \
+         for f in {mnt}/loader/entries/*.conf; do \
+           [ -f \"$f\" ] && echo \"===ENTRY===$(basename \"$f\")\" && cat \"$f\"; \
+         done; \
+         echo '===KERNELS==='; \
+         ls {mnt}/vmlinuz-* {mnt}/initramfs-* 2>/dev/null; \
+         umount {mnt} 2>/dev/null; rmdir {mnt} 2>/dev/null; \
+         true",
+        mnt = mnt,
+        dev = backup_efi_dev,
+    );
+    let result = run_privileged("sh", &["-c", &script]);
+    let output = result.stdout;
 
-    if !mount_res.success {
-        safe_umount(mnt);
+    if !output.contains("===MOUNTED===") {
         return BootValidation {
             backup_efi_accessible: false,
             bootloader_present: false,
@@ -1153,15 +1085,54 @@ fn validate_backup_boot(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
             entry_issues: vec![format!(
                 "Backup-EFI {} nicht mountbar: {}",
                 backup_efi_dev,
-                mount_res.stderr.trim()
+                result.stderr.trim()
             )],
         };
     }
 
-    let bootloader_present =
-        Path::new(&format!("{}/EFI/systemd/systemd-bootx64.efi", mnt)).exists();
+    let bootloader_present = output.contains("BL=yes");
 
-    let entries = read_boot_entries(mnt);
+    // Parse entries
+    let mut entries: Vec<(String, String, String, String)> = Vec::new(); // (id, title, uuid, kernel)
+    let mut current_entry_id = String::new();
+    let mut current_entry_content = String::new();
+    for line in output.lines() {
+        if let Some(name) = line.strip_prefix("===ENTRY===") {
+            if !current_entry_id.is_empty() {
+                let (title, uuid, kernel) = parse_boot_entry(&current_entry_content);
+                entries.push((current_entry_id.clone(), title, uuid, kernel));
+            }
+            current_entry_id = name.trim_end_matches(".conf").to_string();
+            current_entry_content.clear();
+        } else if !current_entry_id.is_empty() && !line.starts_with("===") {
+            current_entry_content.push_str(line);
+            current_entry_content.push('\n');
+        }
+    }
+    if !current_entry_id.is_empty() {
+        let (title, uuid, kernel) = parse_boot_entry(&current_entry_content);
+        entries.push((current_entry_id, title, uuid, kernel));
+    }
+
+    // Collect available kernel files from the ===KERNELS=== section
+    let mut available_files: Vec<String> = Vec::new();
+    let mut in_kernels = false;
+    for line in output.lines() {
+        if line.starts_with("===KERNELS===") {
+            in_kernels = true;
+            continue;
+        }
+        if line.starts_with("===") {
+            in_kernels = false;
+        }
+        if in_kernels {
+            let fname = line.rsplit('/').next().unwrap_or(line).trim();
+            if !fname.is_empty() {
+                available_files.push(fname.to_string());
+            }
+        }
+    }
+
     let mut issues = Vec::new();
     let mut kernels_present = Vec::new();
     let mut kernels_missing = Vec::new();
@@ -1172,26 +1143,20 @@ fn validate_backup_boot(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
         &c.disks.primary_uuid
     };
 
-    for entry in &entries {
-        // Check UUID points to backup disk
-        if !entry.root_uuid.is_empty() && entry.root_uuid != *backup_uuid {
+    for (id, _title, uuid, kernel) in &entries {
+        if !uuid.is_empty() && uuid != backup_uuid {
             issues.push(format!(
                 "{}: UUID {} zeigt nicht auf Backup-Disk (erwartet: {})",
-                entry.id, entry.root_uuid, backup_uuid
+                id, uuid, backup_uuid
             ));
         }
-
-        // Check kernel file exists
-        if !entry.kernel.is_empty() {
-            let kernel_path = format!("{}/{}", mnt, entry.kernel);
-            if Path::new(&kernel_path).exists() {
-                kernels_present.push(entry.kernel.clone());
+        if !kernel.is_empty() {
+            let kernel_fname = kernel.trim_start_matches('/');
+            if available_files.iter().any(|f| f == kernel_fname) {
+                kernels_present.push(kernel.clone());
             } else {
-                kernels_missing.push(entry.kernel.clone());
-                issues.push(format!(
-                    "{}: Kernel '{}' fehlt auf Backup-EFI",
-                    entry.id, entry.kernel
-                ));
+                kernels_missing.push(kernel.clone());
+                issues.push(format!("{}: Kernel '{}' fehlt auf Backup-EFI", id, kernel));
             }
         }
     }
@@ -1199,12 +1164,9 @@ fn validate_backup_boot(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
     if !bootloader_present {
         issues.push("systemd-boot Bootloader fehlt auf Backup-EFI".to_string());
     }
-
     if entries.is_empty() {
         issues.push("Keine Boot-Entries auf Backup-EFI gefunden".to_string());
     }
-
-    safe_umount(mnt);
 
     BootValidation {
         backup_efi_accessible: true,
@@ -1216,7 +1178,7 @@ fn validate_backup_boot(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
     }
 }
 
-/// Gather boot info for the current system
+/// Gather boot info for the current system — single pkexec call
 fn gather_boot_info(c: &AppConfig) -> BootInfo {
     let boot_uuid = get_boot_uuid();
     let booted_from = if boot_uuid == c.disks.primary_uuid {
@@ -1227,50 +1189,134 @@ fn gather_boot_info(c: &AppConfig) -> BootInfo {
         "Unknown".to_string()
     };
 
-    let current_entry = get_current_boot_entry();
-    let bootloader_version = get_bootloader_version("/boot");
-    let entries = read_boot_entries("/boot");
-
-    // Check if backup is bootable: try to find and validate backup EFI
-    let (backup_bootable, backup_bl_version) = if !c.disks.backup_uuid.is_empty() {
-        let backup_dev_result = run_cmd("blkid", &["-U", if boot_uuid == c.disks.primary_uuid {
+    // Determine backup EFI device (if available)
+    let backup_efi = if !c.disks.backup_uuid.is_empty() {
+        let other_uuid = if boot_uuid == c.disks.primary_uuid {
             &c.disks.backup_uuid
         } else {
             &c.disks.primary_uuid
-        }]);
-        if backup_dev_result.success {
-            let backup_dev = backup_dev_result.stdout.trim().to_string();
-            let backup_efi = derive_efi_partition(&backup_dev);
-            let mnt = "/tmp/backsnap-boot-check";
-            let _ = run_privileged("mkdir", &["-p", mnt]);
-            let mount_res = run_privileged("mount", &["-o", "ro", &backup_efi, mnt]);
-            if mount_res.success {
-                let bl_present =
-                    Path::new(&format!("{}/EFI/systemd/systemd-bootx64.efi", mnt)).exists();
-                let bl_ver = if bl_present {
-                    // Read version from the binary using strings + grep
-                    let ver_result = run_cmd("sh", &[
-                        "-c",
-                        &format!("strings {}/EFI/systemd/systemd-bootx64.efi 2>/dev/null | grep -oP 'systemd-boot \\K[0-9.]+' | head -1", mnt),
-                    ]);
-                    let v = ver_result.stdout.trim().to_string();
-                    if v.is_empty() { None } else { Some(format!("systemd-boot {}", v)) }
-                } else {
-                    None
-                };
-                let has_entries = !read_boot_entries(mnt).is_empty();
-                safe_umount(mnt);
-                (bl_present && has_entries, bl_ver)
-            } else {
-                safe_umount(mnt);
-                (false, None)
-            }
+        };
+        let blkid = run_cmd("blkid", &["-U", other_uuid]);
+        if blkid.success {
+            Some(derive_efi_partition(blkid.stdout.trim()))
         } else {
-            (false, None)
+            None
         }
     } else {
-        (false, None)
+        None
     };
+
+    // Build a single script that reads BOTH active /boot AND backup EFI
+    let backup_section = if let Some(ref efi_dev) = backup_efi {
+        format!(
+            "echo '===BACKUP==='; \
+             MNT=/tmp/backsnap-boot-check; \
+             mkdir -p $MNT && mount -o ro {dev} $MNT 2>&1; \
+             if mountpoint -q $MNT 2>/dev/null; then \
+               test -f $MNT/EFI/systemd/systemd-bootx64.efi && echo 'BACKUP_BL=yes' || echo 'BACKUP_BL=no'; \
+               strings $MNT/EFI/systemd/systemd-bootx64.efi 2>/dev/null | grep -oP 'systemd-boot \\K[0-9.]+' | head -1 | sed 's/^/BACKUP_BL_VER=/'; \
+               for f in $MNT/loader/entries/*.conf; do \
+                 [ -f \"$f\" ] && echo \"===BENTRY===$(basename \"$f\")\"; \
+               done; \
+               umount $MNT 2>/dev/null; rmdir $MNT 2>/dev/null; \
+             else \
+               echo 'BACKUP_MOUNT=fail'; \
+             fi",
+            dev = efi_dev,
+        )
+    } else {
+        String::new()
+    };
+
+    let script = format!(
+        "bootctl status 2>/dev/null | head -20; \
+         echo '===ENTRIES==='; \
+         for f in /boot/loader/entries/*.conf; do \
+           [ -f \"$f\" ] && echo \"===ENTRY===$(basename \"$f\")\" && cat \"$f\"; \
+         done; \
+         {backup}",
+        backup = backup_section,
+    );
+
+    let result = run_privileged("sh", &["-c", &script]);
+    let output = result.stdout;
+
+    // Parse bootctl status
+    let mut current_entry = String::new();
+    let mut bootloader_version = String::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if current_entry.is_empty() {
+            if let Some(val) = trimmed.strip_prefix("Current Entry:") {
+                current_entry = val.trim().to_string();
+            }
+        }
+        if bootloader_version.is_empty() {
+            if let Some(val) = trimmed.strip_prefix("Product:") {
+                bootloader_version = val.trim().to_string();
+            }
+        }
+    }
+    if current_entry.is_empty() {
+        current_entry = fs::read_to_string("/proc/cmdline")
+            .unwrap_or_default()
+            .split_whitespace()
+            .find(|p| p.starts_with("BOOT_IMAGE="))
+            .map(|p| p.trim_start_matches("BOOT_IMAGE=").to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+    }
+
+    // Parse active boot entries
+    let mut entries = Vec::new();
+    let mut cur_id = String::new();
+    let mut cur_content = String::new();
+    let mut in_entries = false;
+    for line in output.lines() {
+        if line.starts_with("===ENTRIES===") {
+            in_entries = true;
+            continue;
+        }
+        if line.starts_with("===BACKUP===") {
+            break;
+        }
+        if !in_entries {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix("===ENTRY===") {
+            if !cur_id.is_empty() {
+                let (title, root_uuid, kernel) = parse_boot_entry(&cur_content);
+                let disk = classify_uuid(&root_uuid, c);
+                entries.push(BootEntryInfo { title, id: cur_id.clone(), root_uuid, kernel, disk });
+            }
+            cur_id = name.trim_end_matches(".conf").to_string();
+            cur_content.clear();
+        } else if !cur_id.is_empty() {
+            cur_content.push_str(line);
+            cur_content.push('\n');
+        }
+    }
+    if !cur_id.is_empty() {
+        let (title, root_uuid, kernel) = parse_boot_entry(&cur_content);
+        let disk = classify_uuid(&root_uuid, c);
+        entries.push(BootEntryInfo { title, id: cur_id, root_uuid, kernel, disk });
+    }
+
+    // Parse backup info
+    let backup_bootable;
+    let backup_bl_version;
+    if output.contains("===BACKUP===") {
+        let has_bl = output.contains("BACKUP_BL=yes");
+        let has_entries = output.contains("===BENTRY===");
+        let bl_ver = output.lines()
+            .find_map(|l| l.strip_prefix("BACKUP_BL_VER="))
+            .filter(|v| !v.is_empty())
+            .map(|v| format!("systemd-boot {}", v));
+        backup_bootable = has_bl && has_entries;
+        backup_bl_version = bl_ver;
+    } else {
+        backup_bootable = false;
+        backup_bl_version = None;
+    }
 
     BootInfo {
         current_entry,
@@ -1279,6 +1325,18 @@ fn gather_boot_info(c: &AppConfig) -> BootInfo {
         backup_bootable,
         backup_bootloader_version: backup_bl_version,
         booted_from,
+    }
+}
+
+fn classify_uuid(uuid: &str, c: &AppConfig) -> String {
+    if uuid.is_empty() {
+        "Unknown".to_string()
+    } else if uuid == c.disks.primary_uuid {
+        "Primary".to_string()
+    } else if uuid == c.disks.backup_uuid {
+        "Backup".to_string()
+    } else {
+        "Unknown".to_string()
     }
 }
 
