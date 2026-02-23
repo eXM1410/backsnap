@@ -9,6 +9,7 @@ import {
   Server,
   Cpu,
   Activity,
+  Shield,
 } from "lucide-react";
 import { api, SystemStatus } from "../api";
 import { Card, StatCard, Badge, PageHeader, Loading } from "../components/ui";
@@ -68,7 +69,7 @@ export default function Dashboard() {
           icon={HardDrive}
           color="text-cyan-400"
           sub={
-            status.boot_disk.includes("Samsung") ? "Primary" : "Backup-Modus!"
+            status.boot_info?.booted_from === "Backup" ? "Backup-Modus!" : "Primary"
           }
         />
         <StatCard
@@ -150,6 +151,48 @@ export default function Dashboard() {
           </div>
         </Card>
       </div>
+
+      {/* Boot Info */}
+      {status.boot_info && (
+        <Card className="mb-6">
+          <h3 className="text-sm font-semibold text-zinc-400 mb-4 flex items-center gap-2">
+            <Shield className="w-4 h-4" /> Boot-Menü (systemd-boot)
+          </h3>
+          <div className="grid grid-cols-2 gap-6">
+            <div className="space-y-3">
+              <InfoRow label="Aktiver Entry" value={status.boot_info.current_entry} />
+              <InfoRow label="Bootloader" value={status.boot_info.bootloader_version || "—"} />
+              <InfoRow label="Gebootet von" value={status.boot_info.booted_from} badge={status.boot_info.booted_from === "Primary" ? "cyan" : "red"} />
+              <InfoRow
+                label="Backup bootbar"
+                value={status.boot_info.backup_bootable ? "Ja" : "Nein"}
+                badge={status.boot_info.backup_bootable ? "green" : "red"}
+              />
+              {status.boot_info.backup_bootloader_version && (
+                <InfoRow label="Backup-Bootloader" value={status.boot_info.backup_bootloader_version} />
+              )}
+            </div>
+            <div>
+              <span className="text-xs text-zinc-500 block mb-2">Boot-Entries ({status.boot_info.entries.length})</span>
+              <div className="space-y-1.5">
+                {status.boot_info.entries.map((entry, i) => (
+                  <div key={i} className="flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        status.boot_info!.current_entry.includes(entry.id) ? "bg-emerald-400" : "bg-zinc-600"
+                      }`} />
+                      <span className="text-xs">{entry.title}</span>
+                    </div>
+                    <Badge color={entry.disk === "Primary" ? "cyan" : entry.disk === "Backup" ? "green" : "red"}>
+                      {entry.disk}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Disk Overview */}
       <Card>

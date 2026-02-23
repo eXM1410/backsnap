@@ -44,6 +44,7 @@ export interface SystemStatus {
   snapper_configs: string[];
   snapshot_counts: { config: string; count: number }[];
   sync_status: SyncStatus;
+  boot_info: BootInfo | null;
 }
 
 export interface TimerConfig {
@@ -62,6 +63,33 @@ export interface HealthCheck {
   btrfs_tools: boolean;
   boot_disk: string;
   issues: string[];
+  boot_validation: BootValidation | null;
+}
+
+export interface BootValidation {
+  backup_efi_accessible: boolean;
+  bootloader_present: boolean;
+  entries_valid: boolean;
+  kernels_present: string[];
+  kernels_missing: string[];
+  entry_issues: string[];
+}
+
+export interface BootInfo {
+  current_entry: string;
+  bootloader_version: string;
+  entries: BootEntryInfo[];
+  backup_bootable: boolean;
+  backup_bootloader_version: string | null;
+  booted_from: string;
+}
+
+export interface BootEntryInfo {
+  title: string;
+  id: string;
+  root_uuid: string;
+  kernel: string;
+  disk: string;
 }
 
 export interface SubvolumeInfo {
@@ -238,4 +266,5 @@ export const api = {
     invoke<CommandResult>("install_timer", { calendar, delay }),
   uninstallTimer: () => invoke<CommandResult>("uninstall_timer"),
   getSystemMonitor: () => invoke<SystemMonitorData>("get_system_monitor"),
+  getBootInfo: () => invoke<BootInfo>("get_boot_info"),
 };

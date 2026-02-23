@@ -60,6 +60,7 @@ pub struct SystemStatus {
     pub snapper_configs: Vec<String>,
     pub snapshot_counts: Vec<SnapshotCount>,
     pub sync_status: SyncStatus,
+    pub boot_info: Option<BootInfo>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -94,6 +95,36 @@ pub struct HealthCheck {
     pub btrfs_tools: bool,
     pub boot_disk: String,
     pub issues: Vec<String>,
+    pub boot_validation: Option<BootValidation>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BootValidation {
+    pub backup_efi_accessible: bool,
+    pub bootloader_present: bool,
+    pub entries_valid: bool,
+    pub kernels_present: Vec<String>,
+    pub kernels_missing: Vec<String>,
+    pub entry_issues: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BootInfo {
+    pub current_entry: String,
+    pub bootloader_version: String,
+    pub entries: Vec<BootEntryInfo>,
+    pub backup_bootable: bool,
+    pub backup_bootloader_version: Option<String>,
+    pub booted_from: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BootEntryInfo {
+    pub title: String,
+    pub id: String,
+    pub root_uuid: String,
+    pub kernel: String,
+    pub disk: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -332,6 +363,29 @@ pub fn get_health() -> Result<HealthCheck, String> {
         issues.push(format!("{} nicht aktiv", c.sync.timer_unit));
     }
 
+    // Boot validation: check if backup EFI is healthy
+    let boot_validation = if backup_present && c.boot.sync_enabled {
+        let backup_dev_result = run_cmd("blkid", &["-U", if boot_uuid == c.disks.primary_uuid {
+            &c.disks.backup_uuid
+        } else {
+            &c.disks.primary_uuid
+        }]);
+        if backup_dev_result.success {
+            let backup_dev = backup_dev_result.stdout.trim().to_string();
+            let backup_efi = derive_efi_partition(&backup_dev);
+            let validation = validate_backup_boot(&backup_efi, &c);
+            // Add boot validation issues to main issues
+            for issue in &validation.entry_issues {
+                issues.push(format!("Boot: {}", issue));
+            }
+            Some(validation)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     Ok(HealthCheck {
         primary_present,
         backup_present,
@@ -340,6 +394,7 @@ pub fn get_health() -> Result<HealthCheck, String> {
         btrfs_tools,
         boot_disk,
         issues,
+        boot_validation,
     })
 }
 
@@ -393,6 +448,7 @@ pub fn get_system_status() -> Result<SystemStatus, String> {
         snapper_configs,
         snapshot_counts,
         sync_status,
+        boot_info: Some(gather_boot_info(&c)),
     })
 }
 
@@ -889,8 +945,17 @@ fn do_sync(app: &tauri::AppHandle) -> Result<CommandResult, String> {
             let boot_excludes = c.boot.excludes.clone();
             let boot_exc_refs: Vec<String> = boot_excludes;
             match run_rsync("/boot/", &format!("{}/", boot_mnt), &boot_exc_refs, false) {
-                Ok(_) => sync_log(&c.sync.log_path, "Boot OK."),
+                Ok(_) => sync_log(&c.sync.log_path, "Boot-Dateien OK."),
                 Err(e) => sync_log(&c.sync.log_path, &format!("WARNUNG Boot-Sync: {}", e)),
+            }
+
+            // Update bootloader binary on backup EFI
+            let bl_update = run_privileged("bootctl", &["update", &format!("--esp-path={}", boot_mnt), "--no-variables"]);
+            if bl_update.success {
+                sync_log(&c.sync.log_path, "Bootloader-Update auf Backup-EFI OK.");
+            } else {
+                // Non-fatal — bootloader was likely already installed via bootctl install
+                sync_log(&c.sync.log_path, &format!("WARNUNG Bootloader-Update: {}", bl_update.stderr.trim()));
             }
         } else {
             sync_log(
@@ -961,6 +1026,266 @@ fn derive_efi_partition(btrfs_dev: &str) -> String {
     }
     let base = btrfs_dev.trim_end_matches(|c: char| c.is_ascii_digit());
     format!("{}1", base)
+}
+
+// ─── Boot Info & Validation ──────────────────────────────────
+
+/// Parse a systemd-boot entry .conf file into structured data
+fn parse_boot_entry(content: &str) -> (String, String, String) {
+    let mut title = String::new();
+    let mut root_uuid = String::new();
+    let mut kernel = String::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("title ") {
+            title = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("linux ") {
+            kernel = val.trim().trim_start_matches('/').to_string();
+        } else if let Some(val) = line.strip_prefix("options ") {
+            // Extract root=UUID=xxxx from options line
+            for part in val.split_whitespace() {
+                if let Some(uuid) = part.strip_prefix("root=UUID=") {
+                    root_uuid = uuid.to_string();
+                }
+            }
+        }
+    }
+    (title, root_uuid, kernel)
+}
+
+/// Read boot entries from an ESP path (reads loader/entries/*.conf)
+fn read_boot_entries(esp_path: &str) -> Vec<BootEntryInfo> {
+    let entries_dir = format!("{}/loader/entries", esp_path);
+    let mut entries = Vec::new();
+
+    let dir = match fs::read_dir(&entries_dir) {
+        Ok(d) => d,
+        Err(_) => return entries,
+    };
+
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("conf") {
+            continue;
+        }
+        let id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if let Ok(content) = fs::read_to_string(&path) {
+            let (title, root_uuid, kernel) = parse_boot_entry(&content);
+            let disk = if !root_uuid.is_empty() {
+                let c = cfg();
+                if root_uuid == c.disks.primary_uuid {
+                    "Primary".to_string()
+                } else if root_uuid == c.disks.backup_uuid {
+                    "Backup".to_string()
+                } else {
+                    "Unknown".to_string()
+                }
+            } else {
+                "Unknown".to_string()
+            };
+            entries.push(BootEntryInfo {
+                title,
+                id,
+                root_uuid,
+                kernel,
+                disk,
+            });
+        }
+    }
+    entries
+}
+
+/// Get the current boot entry from bootctl
+fn get_current_boot_entry() -> String {
+    let result = run_cmd("bootctl", &["status"]);
+    for line in result.stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(val) = trimmed.strip_prefix("Current Entry:") {
+            return val.trim().to_string();
+        }
+    }
+    // Fallback: try from kernel cmdline
+    fs::read_to_string("/proc/cmdline")
+        .unwrap_or_default()
+        .split_whitespace()
+        .find(|p| p.starts_with("BOOT_IMAGE="))
+        .map(|p| p.trim_start_matches("BOOT_IMAGE=").to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Get the bootloader version from an ESP path
+fn get_bootloader_version(esp_path: &str) -> String {
+    // Try reading the bootloader binary version via file command
+    let efi_path = format!("{}/EFI/systemd/systemd-bootx64.efi", esp_path);
+    if Path::new(&efi_path).exists() {
+        // Use bootctl to get version if it's the active ESP
+        let result = run_cmd("bootctl", &["status"]);
+        for line in result.stdout.lines() {
+            let trimmed = line.trim();
+            if let Some(val) = trimmed.strip_prefix("Product:") {
+                return val.trim().to_string();
+            }
+        }
+        "systemd-boot (Version unbekannt)".to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Validate boot entries on the backup EFI partition
+fn validate_backup_boot(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
+    let mnt = "/tmp/backsnap-boot-validate";
+    let _ = run_privileged("mkdir", &["-p", mnt]);
+    let mount_res = run_privileged("mount", &["-o", "ro", backup_efi_dev, mnt]);
+
+    if !mount_res.success {
+        safe_umount(mnt);
+        return BootValidation {
+            backup_efi_accessible: false,
+            bootloader_present: false,
+            entries_valid: false,
+            kernels_present: Vec::new(),
+            kernels_missing: Vec::new(),
+            entry_issues: vec![format!(
+                "Backup-EFI {} nicht mountbar: {}",
+                backup_efi_dev,
+                mount_res.stderr.trim()
+            )],
+        };
+    }
+
+    let bootloader_present =
+        Path::new(&format!("{}/EFI/systemd/systemd-bootx64.efi", mnt)).exists();
+
+    let entries = read_boot_entries(mnt);
+    let mut issues = Vec::new();
+    let mut kernels_present = Vec::new();
+    let mut kernels_missing = Vec::new();
+
+    let backup_uuid = if get_boot_uuid() == c.disks.primary_uuid {
+        &c.disks.backup_uuid
+    } else {
+        &c.disks.primary_uuid
+    };
+
+    for entry in &entries {
+        // Check UUID points to backup disk
+        if !entry.root_uuid.is_empty() && entry.root_uuid != *backup_uuid {
+            issues.push(format!(
+                "{}: UUID {} zeigt nicht auf Backup-Disk (erwartet: {})",
+                entry.id, entry.root_uuid, backup_uuid
+            ));
+        }
+
+        // Check kernel file exists
+        if !entry.kernel.is_empty() {
+            let kernel_path = format!("{}/{}", mnt, entry.kernel);
+            if Path::new(&kernel_path).exists() {
+                kernels_present.push(entry.kernel.clone());
+            } else {
+                kernels_missing.push(entry.kernel.clone());
+                issues.push(format!(
+                    "{}: Kernel '{}' fehlt auf Backup-EFI",
+                    entry.id, entry.kernel
+                ));
+            }
+        }
+    }
+
+    if !bootloader_present {
+        issues.push("systemd-boot Bootloader fehlt auf Backup-EFI".to_string());
+    }
+
+    if entries.is_empty() {
+        issues.push("Keine Boot-Entries auf Backup-EFI gefunden".to_string());
+    }
+
+    safe_umount(mnt);
+
+    BootValidation {
+        backup_efi_accessible: true,
+        bootloader_present,
+        entries_valid: issues.is_empty(),
+        kernels_present,
+        kernels_missing,
+        entry_issues: issues,
+    }
+}
+
+/// Gather boot info for the current system
+fn gather_boot_info(c: &AppConfig) -> BootInfo {
+    let boot_uuid = get_boot_uuid();
+    let booted_from = if boot_uuid == c.disks.primary_uuid {
+        "Primary".to_string()
+    } else if boot_uuid == c.disks.backup_uuid {
+        "Backup".to_string()
+    } else {
+        "Unknown".to_string()
+    };
+
+    let current_entry = get_current_boot_entry();
+    let bootloader_version = get_bootloader_version("/boot");
+    let entries = read_boot_entries("/boot");
+
+    // Check if backup is bootable: try to find and validate backup EFI
+    let (backup_bootable, backup_bl_version) = if !c.disks.backup_uuid.is_empty() {
+        let backup_dev_result = run_cmd("blkid", &["-U", if boot_uuid == c.disks.primary_uuid {
+            &c.disks.backup_uuid
+        } else {
+            &c.disks.primary_uuid
+        }]);
+        if backup_dev_result.success {
+            let backup_dev = backup_dev_result.stdout.trim().to_string();
+            let backup_efi = derive_efi_partition(&backup_dev);
+            let mnt = "/tmp/backsnap-boot-check";
+            let _ = run_privileged("mkdir", &["-p", mnt]);
+            let mount_res = run_privileged("mount", &["-o", "ro", &backup_efi, mnt]);
+            if mount_res.success {
+                let bl_present =
+                    Path::new(&format!("{}/EFI/systemd/systemd-bootx64.efi", mnt)).exists();
+                let bl_ver = if bl_present {
+                    // Read version from the binary using strings + grep
+                    let ver_result = run_cmd("sh", &[
+                        "-c",
+                        &format!("strings {}/EFI/systemd/systemd-bootx64.efi 2>/dev/null | grep -oP 'systemd-boot \\K[0-9.]+' | head -1", mnt),
+                    ]);
+                    let v = ver_result.stdout.trim().to_string();
+                    if v.is_empty() { None } else { Some(format!("systemd-boot {}", v)) }
+                } else {
+                    None
+                };
+                let has_entries = !read_boot_entries(mnt).is_empty();
+                safe_umount(mnt);
+                (bl_present && has_entries, bl_ver)
+            } else {
+                safe_umount(mnt);
+                (false, None)
+            }
+        } else {
+            (false, None)
+        }
+    } else {
+        (false, None)
+    };
+
+    BootInfo {
+        current_entry,
+        bootloader_version,
+        entries,
+        backup_bootable,
+        backup_bootloader_version: backup_bl_version,
+        booted_from,
+    }
+}
+
+#[tauri::command]
+pub fn get_boot_info() -> Result<BootInfo, String> {
+    let c = cfg();
+    Ok(gather_boot_info(&c))
 }
 
 // ─── Rollback (dynamic, config-driven) ───────────────────────
@@ -1566,8 +1891,8 @@ pub fn run_sync_headless(config_path_override: Option<String>) -> i32 {
         if mount_res.success {
             match run_rsync("/boot/", &format!("{}/", boot_mnt), &c.boot.excludes, false) {
                 Ok(_) => {
-                    println!("backsnap: Boot OK.");
-                    sync_log(&c.sync.log_path, "Boot OK.");
+                    println!("backsnap: Boot-Dateien OK.");
+                    sync_log(&c.sync.log_path, "Boot-Dateien OK.");
                 }
                 Err(e) => {
                     println!("backsnap: WARNUNG Boot-Sync: {}", e);
@@ -1576,6 +1901,16 @@ pub fn run_sync_headless(config_path_override: Option<String>) -> i32 {
                         &format!("WARNUNG Boot-Sync: {}", e),
                     );
                 }
+            }
+
+            // Update bootloader binary on backup EFI
+            let bl_update = run_privileged("bootctl", &["update", &format!("--esp-path={}", boot_mnt), "--no-variables"]);
+            if bl_update.success {
+                println!("backsnap: Bootloader-Update OK.");
+                sync_log(&c.sync.log_path, "Bootloader-Update auf Backup-EFI OK.");
+            } else {
+                println!("backsnap: WARNUNG Bootloader-Update: {}", bl_update.stderr.trim());
+                sync_log(&c.sync.log_path, &format!("WARNUNG Bootloader-Update: {}", bl_update.stderr.trim()));
             }
         } else {
             println!(

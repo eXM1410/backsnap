@@ -40,6 +40,7 @@ pub fn run() {
             install_timer,
             uninstall_timer,
             get_system_monitor,
+            get_boot_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
