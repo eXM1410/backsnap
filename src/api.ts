@@ -141,6 +141,71 @@ export interface CommandResult {
   exit_code: number;
 }
 
+// ─── System Monitor Types ─────────────────────────────────────
+
+export interface SystemMonitorData {
+  cpu: CpuMonInfo;
+  memory: MemoryMonInfo;
+  swap: SwapMonInfo;
+  cpu_sensor: CpuSensorInfo;
+  gpu: GpuMonInfo;
+  load: LoadAvgInfo;
+  uptime: UptimeMonInfo;
+  battery: BatteryMonInfo | null;
+}
+
+export interface CpuMonInfo {
+  model: string;
+  cores: number;
+  threads: number;
+  usage_percent: number;
+  per_core_usage: number[];
+  frequency_mhz: number | null;
+}
+
+export interface MemoryMonInfo {
+  total_mib: number;
+  used_mib: number;
+  available_mib: number;
+  percent: number;
+}
+
+export interface SwapMonInfo {
+  total_mib: number;
+  used_mib: number;
+  percent: number;
+}
+
+export interface CpuSensorInfo {
+  temp_celsius: number | null;
+  power_watts: number | null;
+  power_no_permission: boolean;
+}
+
+export interface GpuMonInfo {
+  name: string;
+  temp_celsius: number | null;
+  power_watts: number | null;
+  vram_total_mib: number | null;
+  vram_used_mib: number | null;
+  gpu_busy_percent: number | null;
+}
+
+export interface LoadAvgInfo {
+  one: number;
+  five: number;
+  fifteen: number;
+}
+
+export interface UptimeMonInfo {
+  seconds: number;
+  formatted: string;
+}
+
+export interface BatteryMonInfo {
+  power_watts: number;
+}
+
 // ─── API Calls ────────────────────────────────────────────────
 
 export const api = {
@@ -172,4 +237,5 @@ export const api = {
   installTimer: (calendar: string, delay: string) =>
     invoke<CommandResult>("install_timer", { calendar, delay }),
   uninstallTimer: () => invoke<CommandResult>("uninstall_timer"),
+  getSystemMonitor: () => invoke<SystemMonitorData>("get_system_monitor"),
 };

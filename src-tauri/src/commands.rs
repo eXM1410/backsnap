@@ -1,4 +1,5 @@
 use crate::config::{self, AppConfig};
+use crate::sysmon;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -1249,6 +1250,11 @@ pub fn get_btrfs_usage() -> Result<String, String> {
     } else {
         Err(result.stderr)
     }
+}
+
+#[tauri::command]
+pub fn get_system_monitor() -> Result<sysmon::SystemMonitorData, String> {
+    Ok(sysmon::read_system_monitor())
 }
 
 // ─── Systemd Timer Install/Uninstall ──────────────────────────

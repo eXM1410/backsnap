@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod sysmon;
 
 use commands::*;
 
@@ -38,6 +39,7 @@ pub fn run() {
             reset_config,
             install_timer,
             uninstall_timer,
+            get_system_monitor,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

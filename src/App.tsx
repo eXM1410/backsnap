@@ -7,6 +7,7 @@ import {
   Settings,
   HardDrive,
   Terminal,
+  Activity,
   Shield,
 } from "lucide-react";
 import Dashboard from "./pages/Dashboard";
@@ -16,12 +17,14 @@ import Schedule from "./pages/Schedule";
 import Disks from "./pages/Disks";
 import Logs from "./pages/Logs";
 import SettingsPage from "./pages/Settings";
+import Monitor from "./pages/Monitor";
 
 const nav = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/snapshots", icon: Camera, label: "Snapshots" },
   { to: "/sync", icon: RefreshCw, label: "NVMe Sync" },
   { to: "/schedule", icon: Clock, label: "Zeitplan" },
+  { to: "/monitor", icon: Activity, label: "Monitor" },
   { to: "/disks", icon: HardDrive, label: "Disks" },
   { to: "/logs", icon: Terminal, label: "Logs" },
   { to: "/settings", icon: Settings, label: "Einstellungen" },
@@ -77,6 +80,7 @@ export default function App() {
           <Route path="/snapshots" element={<Snapshots />} />
           <Route path="/sync" element={<Sync />} />
           <Route path="/schedule" element={<Schedule />} />
+          <Route path="/monitor" element={<Monitor />} />
           <Route path="/disks" element={<Disks />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/settings" element={<SettingsPage />} />
