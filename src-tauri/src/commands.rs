@@ -15,6 +15,7 @@ static SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 static BOOT_INFO_CACHE: OnceLock<Mutex<Option<BootInfo>>> = OnceLock::new();
 static BOOT_VALIDATION_CACHE: OnceLock<Mutex<Option<BootValidation>>> = OnceLock::new();
 static DISK_USAGE_CACHE: OnceLock<Mutex<Option<HashMap<String, u64>>>> = OnceLock::new();
+static DU_COMPUTING: AtomicBool = AtomicBool::new(false);
 
 fn invalidate_caches() {
     if let Some(c) = DISK_USAGE_CACHE.get() {
@@ -563,69 +564,76 @@ fn get_disk_info() -> Vec<DiskInfo> {
         }
     }
 
-    // ── 2. Per-subvolume actual usage via du (cached) ──────────
+    // ── 2. Per-subvolume usage: use cached du if available, else df fallback ──
     if !btrfs_entries.is_empty() {
         btrfs_entries.sort_by_key(|e| e.0.len());
 
-        // Check cache first
         let cache = DISK_USAGE_CACHE.get_or_init(|| Mutex::new(None));
-        let mut guard = cache.lock().unwrap();
-        let du_map = if let Some(ref cached) = *guard {
-            cached.clone()
-        } else {
-            // Cache miss — run du once for all mounts
-            let all_mounts: Vec<&str> = btrfs_entries.iter().map(|e| e.0.as_str()).collect();
-            let mut script_parts: Vec<String> = Vec::new();
-            for (mount, _, _, _) in &btrfs_entries {
-                let excludes: Vec<String> = all_mounts
-                    .iter()
-                    .filter(|&&m| {
-                        m != mount.as_str()
-                            && m.starts_with(mount.as_str())
-                            && (mount == "/" || m[mount.len()..].starts_with('/'))
-                    })
-                    .map(|m| format!("--exclude='{}'", m))
-                    .collect();
-                script_parts.push(format!(
-                    "du -sb {} '{}' 2>/dev/null || echo '0\t{}'",
-                    excludes.join(" "),
-                    mount,
-                    mount
-                ));
-            }
-            let script = script_parts.join("; ");
-            let du = run_cmd("sh", &["-c", &script]);
-
-            let map: HashMap<String, u64> = du
-                .stdout
-                .lines()
-                .filter_map(|line| {
-                    let mut parts = line.splitn(2, '\t');
-                    let bytes = parts.next()?.trim().parse::<u64>().ok()?;
-                    let path = parts.next()?.trim().to_string();
-                    Some((path, bytes))
-                })
-                .collect();
-            *guard = Some(map.clone());
-            map
-        };
+        let guard = cache.lock().unwrap();
+        let du_ready = guard.is_some();
+        let du_map = guard.clone();
         drop(guard);
 
+        // If no cached du data yet, spawn background computation
+        if !du_ready && !DU_COMPUTING.swap(true, Ordering::SeqCst) {
+            let mounts: Vec<String> = btrfs_entries.iter().map(|e| e.0.clone()).collect();
+            std::thread::spawn(move || {
+                let mut script_parts: Vec<String> = Vec::new();
+                for mount in &mounts {
+                    let excludes: Vec<String> = mounts
+                        .iter()
+                        .filter(|m| {
+                            m.as_str() != mount.as_str()
+                                && m.starts_with(mount.as_str())
+                                && (mount == "/" || m[mount.len()..].starts_with('/'))
+                        })
+                        .map(|m| format!("--exclude='{}'", m))
+                        .collect();
+                    script_parts.push(format!(
+                        "du -sb {} '{}' 2>/dev/null || echo '0\t{}'",
+                        excludes.join(" "),
+                        mount,
+                        mount
+                    ));
+                }
+                let script = script_parts.join("; ");
+                let du = run_cmd("sh", &["-c", &script]);
+                let map: HashMap<String, u64> = du
+                    .stdout
+                    .lines()
+                    .filter_map(|line| {
+                        let mut parts = line.splitn(2, '\t');
+                        let bytes = parts.next()?.trim().parse::<u64>().ok()?;
+                        let path = parts.next()?.trim().to_string();
+                        Some((path, bytes))
+                    })
+                    .collect();
+                if let Some(c) = DISK_USAGE_CACHE.get() {
+                    *c.lock().unwrap() = Some(map);
+                }
+                DU_COMPUTING.store(false, Ordering::SeqCst);
+            });
+        }
+
         for (mount, name, uuid, pool_size) in &btrfs_entries {
-            let used = du_map.get(mount.as_str()).copied().unwrap_or(0);
-            let pct = if *pool_size > 0 {
-                format!(
-                    "{}%",
-                    (used as f64 / *pool_size as f64 * 100.0).round() as u64
-                )
+            let (used_str, pct) = if let Some(ref map) = du_map {
+                // Use precise du values
+                let used = map.get(mount.as_str()).copied().unwrap_or(0);
+                let p = if *pool_size > 0 {
+                    format!("{}%", (used as f64 / *pool_size as f64 * 100.0).round() as u64)
+                } else {
+                    "0%".to_string()
+                };
+                (format_bytes(used), p)
             } else {
-                "0%".to_string()
+                // Fallback: show "..." while du is computing
+                ("\u{2026}".to_string(), "\u{2026}".to_string())
             };
             disks.push(DiskInfo {
                 name: name.clone(),
                 fstype: "btrfs".to_string(),
                 size: format_bytes(*pool_size),
-                used: format_bytes(used),
+                used: used_str,
                 avail: format_bytes(pool_avail.get(uuid).copied().unwrap_or(0)),
                 use_percent: pct,
                 mountpoint: mount.clone(),
@@ -1328,16 +1336,38 @@ fn validate_backup_boot(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
     }
 }
 
-/// Return cached boot info, gathering it at most once per session
+static BOOT_COMPUTING: AtomicBool = AtomicBool::new(false);
+
+/// Return cached boot info. If not yet available, return placeholder and spawn background fetch.
 fn get_cached_boot_info(c: &AppConfig) -> BootInfo {
     let cache = BOOT_INFO_CACHE.get_or_init(|| Mutex::new(None));
-    let mut guard = cache.lock().unwrap();
+    let guard = cache.lock().unwrap();
     if let Some(ref info) = *guard {
         return info.clone();
     }
-    let info = gather_boot_info(c);
-    *guard = Some(info.clone());
-    info
+    drop(guard);
+
+    // Spawn background fetch if not already running
+    if !BOOT_COMPUTING.swap(true, Ordering::SeqCst) {
+        let config = c.clone();
+        std::thread::spawn(move || {
+            let info = gather_boot_info(&config);
+            if let Some(c) = BOOT_INFO_CACHE.get() {
+                *c.lock().unwrap() = Some(info);
+            }
+            BOOT_COMPUTING.store(false, Ordering::SeqCst);
+        });
+    }
+
+    // Return placeholder while loading
+    BootInfo {
+        current_entry: "Laden…".to_string(),
+        bootloader_version: String::new(),
+        entries: Vec::new(),
+        backup_bootable: false,
+        backup_bootloader_version: None,
+        booted_from: "…".to_string(),
+    }
 }
 
 /// Gather boot info for the current system — single pkexec call
