@@ -71,6 +71,7 @@ pub struct SystemStatus {
     pub kernel: String,
     pub uptime: String,
     pub boot_disk: String,
+    pub backup_disk: String,
     pub boot_uuid: String,
     pub disks: Vec<DiskInfo>,
     pub snapper_configs: Vec<String>,
@@ -441,6 +442,11 @@ pub fn get_system_status() -> Result<SystemStatus, String> {
 
     let boot_uuid = get_boot_uuid();
     let boot_disk = disk_label(&boot_uuid, &c);
+    let backup_disk = if boot_uuid == c.disks.primary_uuid {
+        c.disks.backup_label.clone()
+    } else {
+        c.disks.primary_label.clone()
+    };
 
     let disks = get_disk_info();
     let snapper_configs = get_snapper_configs();
@@ -459,6 +465,7 @@ pub fn get_system_status() -> Result<SystemStatus, String> {
         kernel,
         uptime,
         boot_disk,
+        backup_disk,
         boot_uuid,
         disks,
         snapper_configs,

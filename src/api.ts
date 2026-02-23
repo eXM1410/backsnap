@@ -39,6 +39,7 @@ export interface SystemStatus {
   kernel: string;
   uptime: string;
   boot_disk: string;
+  backup_disk: string;
   boot_uuid: string;
   disks: DiskInfo[];
   snapper_configs: string[];
