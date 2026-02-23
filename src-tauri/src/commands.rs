@@ -1222,38 +1222,16 @@ fn validate_backup_boot(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
     }
 }
 
-static BOOT_COMPUTING: AtomicBool = AtomicBool::new(false);
-
-/// Return cached boot info. If not yet available, return placeholder and spawn background fetch.
+/// Return cached boot info — synchronous, needs pkexec (once per session)
 fn get_cached_boot_info(c: &AppConfig) -> BootInfo {
     let cache = BOOT_INFO_CACHE.get_or_init(|| Mutex::new(None));
-    let guard = cache.lock().unwrap();
+    let mut guard = cache.lock().unwrap();
     if let Some(ref info) = *guard {
         return info.clone();
     }
-    drop(guard);
-
-    // Spawn background fetch if not already running
-    if !BOOT_COMPUTING.swap(true, Ordering::SeqCst) {
-        let config = c.clone();
-        std::thread::spawn(move || {
-            let info = gather_boot_info(&config);
-            if let Some(c) = BOOT_INFO_CACHE.get() {
-                *c.lock().unwrap() = Some(info);
-            }
-            BOOT_COMPUTING.store(false, Ordering::SeqCst);
-        });
-    }
-
-    // Return placeholder while loading
-    BootInfo {
-        current_entry: "Laden…".to_string(),
-        bootloader_version: String::new(),
-        entries: Vec::new(),
-        backup_bootable: false,
-        backup_bootloader_version: None,
-        booted_from: "…".to_string(),
-    }
+    let info = gather_boot_info(c);
+    *guard = Some(info.clone());
+    info
 }
 
 /// Gather boot info for the current system — single pkexec call

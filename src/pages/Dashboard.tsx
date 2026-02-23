@@ -52,7 +52,7 @@ export default function Dashboard() {
     (a, b) => a + b.count,
     0
   );
-  const rootDisk = status.disks.find((d) => d.mountpoint === "/");
+  const rootDisk = status.disks.find((d) => d.fstype === "btrfs" && d.mountpoint.startsWith("/"));
 
   return (
     <div className="p-8">
