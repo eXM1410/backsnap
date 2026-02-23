@@ -7,10 +7,12 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use tauri::Emitter;
 
 static SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+static BOOT_INFO_CACHE: OnceLock<Mutex<Option<BootInfo>>> = OnceLock::new();
 
 // ─── Data Types ───────────────────────────────────────────────
 
@@ -448,7 +450,7 @@ pub fn get_system_status() -> Result<SystemStatus, String> {
         snapper_configs,
         snapshot_counts,
         sync_status,
-        boot_info: Some(gather_boot_info(&c)),
+        boot_info: Some(get_cached_boot_info(&c)),
     })
 }
 
@@ -480,14 +482,36 @@ fn get_disk_info() -> Vec<DiskInfo> {
         .collect();
 
     let mut disks = Vec::new();
+    let mut seen_uuids: HashMap<String, usize> = HashMap::new(); // UUID -> index of first entry
+
     for line in result.stdout.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 7 {
             let mountpoint = parts[6..].join(" ");
+
+            // Filter out temp mounts from backsnap operations
+            if mountpoint.starts_with("/tmp/backsnap") {
+                continue;
+            }
+
             let uuid = uuid_map.get(&mountpoint).cloned().unwrap_or_default();
+            let fstype = parts[1].to_string();
+
+            // For Btrfs: deduplicate by UUID — show pool total on first entry,
+            // skip duplicate entries (subvols share the same df numbers)
+            if fstype == "btrfs" && !uuid.is_empty() {
+                if let Some(&first_idx) = seen_uuids.get(&uuid) {
+                    // Append this mountpoint to the first entry's mountpoint list
+                    let first: &mut DiskInfo = &mut disks[first_idx];
+                    first.mountpoint = format!("{}, {}", first.mountpoint, mountpoint);
+                    continue;
+                }
+                seen_uuids.insert(uuid.clone(), disks.len());
+            }
+
             disks.push(DiskInfo {
                 name: parts[0].to_string(),
-                fstype: parts[1].to_string(),
+                fstype,
                 size: parts[2].to_string(),
                 used: parts[3].to_string(),
                 avail: parts[4].to_string(),
@@ -1178,6 +1202,18 @@ fn validate_backup_boot(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
     }
 }
 
+/// Return cached boot info, gathering it at most once per session
+fn get_cached_boot_info(c: &AppConfig) -> BootInfo {
+    let cache = BOOT_INFO_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().unwrap();
+    if let Some(ref info) = *guard {
+        return info.clone();
+    }
+    let info = gather_boot_info(c);
+    *guard = Some(info.clone());
+    info
+}
+
 /// Gather boot info for the current system — single pkexec call
 fn gather_boot_info(c: &AppConfig) -> BootInfo {
     let boot_uuid = get_boot_uuid();
@@ -1343,7 +1379,7 @@ fn classify_uuid(uuid: &str, c: &AppConfig) -> String {
 #[tauri::command]
 pub fn get_boot_info() -> Result<BootInfo, String> {
     let c = cfg();
-    Ok(gather_boot_info(&c))
+    Ok(get_cached_boot_info(&c))
 }
 
 // ─── Rollback (dynamic, config-driven) ───────────────────────
