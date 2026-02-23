@@ -1283,7 +1283,7 @@ fn gather_boot_info(c: &AppConfig) -> BootInfo {
                test -f $MNT/EFI/systemd/systemd-bootx64.efi && echo 'BACKUP_BL=yes' || echo 'BACKUP_BL=no'; \
                strings $MNT/EFI/systemd/systemd-bootx64.efi 2>/dev/null | grep -oP 'systemd-boot \\K[0-9.]+' | head -1 | sed 's/^/BACKUP_BL_VER=/'; \
                for f in $MNT/loader/entries/*.conf; do \
-                 [ -f \"$f\" ] && echo \"===BENTRY===$(basename \"$f\")\"; \
+                 [ -f \"$f\" ] && echo \"===BENTRY===$(basename \"$f\")\" && cat \"$f\"; \
                done; \
                umount $MNT 2>/dev/null; rmdir $MNT 2>/dev/null; \
              else \
@@ -1373,12 +1373,50 @@ fn gather_boot_info(c: &AppConfig) -> BootInfo {
     let backup_bl_version;
     if output.contains("===BACKUP===") {
         let has_bl = output.contains("BACKUP_BL=yes");
-        let has_entries = output.contains("===BENTRY===");
         let bl_ver = output.lines()
             .find_map(|l| l.strip_prefix("BACKUP_BL_VER="))
             .filter(|v| !v.is_empty())
             .map(|v| format!("systemd-boot {}", v));
-        backup_bootable = has_bl && has_entries;
+
+        // Parse backup boot entries (after ===BACKUP===)
+        let mut in_backup = false;
+        let mut bcur_id = String::new();
+        let mut bcur_content = String::new();
+        let mut has_backup_entries = false;
+        for line in output.lines() {
+            if line.starts_with("===BACKUP===") {
+                in_backup = true;
+                continue;
+            }
+            if !in_backup {
+                continue;
+            }
+            if let Some(name) = line.strip_prefix("===BENTRY===") {
+                if !bcur_id.is_empty() {
+                    let (title, root_uuid, kernel) = parse_boot_entry(&bcur_content);
+                    let disk = classify_uuid(&root_uuid, c);
+                    entries.push(BootEntryInfo { title, id: bcur_id.clone(), root_uuid, kernel, disk });
+                    has_backup_entries = true;
+                }
+                bcur_id = name.trim_end_matches(".conf").to_string();
+                bcur_content.clear();
+            } else if !bcur_id.is_empty()
+                && !line.starts_with("BACKUP_BL=")
+                && !line.starts_with("BACKUP_BL_VER=")
+                && !line.starts_with("BACKUP_MOUNT=")
+            {
+                bcur_content.push_str(line);
+                bcur_content.push('\n');
+            }
+        }
+        if !bcur_id.is_empty() {
+            let (title, root_uuid, kernel) = parse_boot_entry(&bcur_content);
+            let disk = classify_uuid(&root_uuid, c);
+            entries.push(BootEntryInfo { title, id: bcur_id, root_uuid, kernel, disk });
+            has_backup_entries = true;
+        }
+
+        backup_bootable = has_bl && has_backup_entries;
         backup_bl_version = bl_ver;
     } else {
         backup_bootable = false;
