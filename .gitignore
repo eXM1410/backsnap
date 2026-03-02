@@ -23,3 +23,14 @@ Thumbs.db
 # Environment
 .env
 .env.*
+
+# Packaging build artifacts (binaries, built packages, tarballs)
+packaging/arch/backsnap
+packaging/arch/src/backsnap
+packaging/arch/pkg/
+packaging/arch/*.pkg.tar.zst
+packaging/arch/*.tar.gz
+
+# Test/debug data
+src-tauri/test_disks*
+src-tauri/src/crash
