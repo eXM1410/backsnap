@@ -1,0 +1,1 @@
+/home/max/backsnap/packaging/arch/backsnap-pacman-pre.sh

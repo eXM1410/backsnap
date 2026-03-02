@@ -1,0 +1,47 @@
+post_install() {
+  echo "backsnap installed."
+  echo ""
+  echo "  Binary:        /usr/bin/backsnap"
+  echo "  Polkit:        /etc/polkit-1/rules.d/50-backsnap.rules"
+  echo "  Pacman-Hook:   /etc/pacman.d/hooks/00-backsnap-pre.hook"
+  echo "  Autostart:     /etc/xdg/autostart/backsnap.desktop"
+  echo ""
+  echo "  Start from menu or run: backsnap"
+  echo "  Timer über die App einrichten: Sync-Zeitplan → Installieren"
+
+  # Clean up stale /usr/local/bin binary from old install.sh
+  if [ -f /usr/local/bin/backsnap ]; then
+    rm -f /usr/local/bin/backsnap
+    echo "  Removed stale /usr/local/bin/backsnap"
+  fi
+
+  # Clean up per-user autostart that pointed to /usr/local/bin
+  for home_dir in /home/*; do
+    old="$home_dir/.config/autostart/backsnap.desktop"
+    if [ -f "$old" ] && grep -q "/usr/local/bin" "$old" 2>/dev/null; then
+      rm -f "$old"
+      echo "  Removed old autostart: $old (now handled by /etc/xdg/autostart/)"
+    fi
+  done
+
+  gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+  update-desktop-database -q /usr/share/applications 2>/dev/null || true
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  echo "backsnap removed."
+  echo "  Config preserved: ~/.config/backsnap/config.toml"
+  echo "  Logs preserved:   /var/log/backsnap-sync.log"
+
+  # Disable timer if running
+  systemctl disable --now backsnap-sync.timer 2>/dev/null || true
+  systemctl stop backsnap-sync.service 2>/dev/null || true
+  systemctl daemon-reload 2>/dev/null || true
+
+  gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+  update-desktop-database -q /usr/share/applications 2>/dev/null || true
+}

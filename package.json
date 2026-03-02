@@ -13,6 +13,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@tauri-apps/plugin-autostart": "^2.5.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },

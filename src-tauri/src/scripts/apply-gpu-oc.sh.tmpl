@@ -1,0 +1,90 @@
+#!/bin/bash
+# Backsnap GPU OC — dynamic GPU detection + JSON profile
+# No set -e: log errors but continue applying remaining settings
+
+PROFILE="@@PROFILE_PATH@@"
+if [ ! -f "$PROFILE" ]; then
+    echo "No GPU OC profile found at $PROFILE, skipping."
+    exit 0
+fi
+
+if ! command -v jq &>/dev/null; then
+    echo "ERROR: jq not installed, cannot parse GPU OC profile."
+    exit 1
+fi
+
+# ─── Dynamic AMD GPU detection ───────────────────────────────
+CARD=""
+for d in /sys/class/drm/card[0-9]*; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    # Skip render nodes like card0-DP-1
+    [[ "$name" == *-* ]] && continue
+    if [ -f "$d/device/pp_od_clk_voltage" ]; then
+        CARD="$name"
+        break
+    fi
+done
+
+if [ -z "$CARD" ]; then
+    echo "ERROR: No AMD GPU with OD support found."
+    exit 1
+fi
+
+# Find hwmon for this GPU
+HWMON=""
+for h in /sys/class/drm/$CARD/device/hwmon/hwmon*; do
+    [ -d "$h" ] && HWMON="$h" && break
+done
+
+if [ -z "$HWMON" ]; then
+    echo "ERROR: No hwmon found for $CARD."
+    exit 1
+fi
+
+echo "Detected GPU: $CARD (hwmon: $HWMON)"
+
+# ─── Read profile ────────────────────────────────────────────
+SCLK=$(jq -r '.sclk_max' "$PROFILE")
+MCLK=$(jq -r '.mclk_max' "$PROFILE")
+VO=$(jq -r '.voltage_offset' "$PROFILE")
+POWER=$(jq -r '.power_cap_w' "$PROFILE")
+PERF=$(jq -r '.performance_level' "$PROFILE")
+PPROFILE=$(jq -r '.power_profile_index' "$PROFILE")
+FAN_MODE=$(jq -r '.fan_mode' "$PROFILE")
+FAN_PWM=$(jq -r '.fan_pwm' "$PROFILE")
+
+OD="/sys/class/drm/$CARD/device/pp_od_clk_voltage"
+PERF_PATH="/sys/class/drm/$CARD/device/power_dpm_force_performance_level"
+PROFILE_PATH="/sys/class/drm/$CARD/device/pp_power_profile_mode"
+
+ERRORS=0
+apply() {
+    local desc="$1" val="$2" path="$3"
+    if ! echo "$val" > "$path" 2>/dev/null; then
+        echo "WARN: Failed to apply $desc ($val -> $path)"
+        ERRORS=$((ERRORS + 1))
+    fi
+}
+
+# ─── Apply settings ──────────────────────────────────────────
+apply "performance_level" "$PERF" "$PERF_PATH"
+apply "power_profile" "$PPROFILE" "$PROFILE_PATH"
+apply "sclk_max" "s 1 $SCLK" "$OD"
+apply "mclk_max" "m 1 $MCLK" "$OD"
+apply "voltage_offset" "vo $VO" "$OD"
+apply "commit" "c" "$OD"
+apply "power_cap" "$(( POWER * 1000000 ))" "$HWMON/power1_cap"
+
+if [ "$FAN_MODE" = "manual" ]; then
+    apply "fan_enable" "1" "$HWMON/pwm1_enable"
+    apply "fan_pwm" "$FAN_PWM" "$HWMON/pwm1"
+else
+    apply "fan_auto" "2" "$HWMON/pwm1_enable"
+fi
+
+if [ "$ERRORS" -gt 0 ]; then
+    echo "backsnap GPU OC applied with $ERRORS warning(s) ($CARD): SCLK=${SCLK} MCLK=${MCLK} VO=${VO}mV Power=${POWER}W"
+else
+    echo "backsnap GPU OC applied ($CARD): SCLK=${SCLK} MCLK=${MCLK} VO=${VO}mV Power=${POWER}W"
+fi

@@ -22,8 +22,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = async () => {
-    setLoading(true);
+  const refresh = async (isBackground = false) => {
+    if (!isBackground) setLoading(true);
     try {
       const s = await api.getSystemStatus();
       setStatus(s);
@@ -37,7 +37,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 30000);
+    const interval = setInterval(() => refresh(true), 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -55,7 +55,9 @@ export default function Dashboard() {
     (a, b) => a + b.count,
     0
   );
-  const rootDisk = status.disks.find((d) => d.fstype === "btrfs" && d.mountpoint.startsWith("/"));
+  const rootDisk = status.disks.find(
+    (d) => d.fstype === "btrfs" && d.mountpoint === "/"
+  );
 
   return (
     <div className="p-8">
@@ -388,10 +390,11 @@ function InfoRow({
 }
 
 function DiskBar({ percent }: { percent: number }) {
+  const safePercent = isNaN(percent) ? 0 : percent;
   const color =
-    percent > 90
+    safePercent > 90
       ? "bg-red-500"
-      : percent > 70
+      : safePercent > 70
         ? "bg-amber-500"
         : "bg-cyan-500";
   return (
@@ -399,10 +402,10 @@ function DiskBar({ percent }: { percent: number }) {
       <div className="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
         <div
           className={`h-full rounded-full ${color}`}
-          style={{ width: `${percent}%` }}
+          style={{ width: `${safePercent}%` }}
         />
       </div>
-      <span className="text-xs text-zinc-500">{percent}%</span>
+      <span className="text-xs text-zinc-500">{safePercent}%</span>
     </div>
   );
 }

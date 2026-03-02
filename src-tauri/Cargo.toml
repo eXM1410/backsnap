@@ -5,7 +5,7 @@ description = "System Backup & Recovery Manager"
 authors = ["Max"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.79.0"
 
 [lib]
 name = "app_lib"
@@ -18,10 +18,79 @@ tauri-build = { version = "2.5.4", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.10.0", features = [] }
+tauri = { version = "2.10.0", features = ["tray-icon", "image-png"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 dirs = "6"
+libc = "0.2"
+jwalk = "0.8"
+rayon = "1.10"
+tauri-plugin-autostart = "2.5.1"
+tauri-plugin-window-state = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+# ─── Strict Compiler & Clippy Lints ───────────────────────────
+# Ziel: Compiler so streng wie möglich, damit KI-generierter Code
+# schon beim Compilieren auffliegt statt zur Laufzeit.
+
+[lints.rust]
+unsafe_code = "deny"
+# unused imports/vars/mut → sofort rot statt nur warnung
+unused_imports = "deny"
+unused_variables = "deny"
+unused_mut = "deny"
+dead_code = "warn"
+unreachable_code = "deny"
+unreachable_patterns = "deny"
+
+[lints.clippy]
+# ── Pedantic als Baseline (streng aber sinnvoll) ──
+pedantic = { level = "warn", priority = -1 }
+
+# ── Explizite Verbote ──
+unwrap_used = "deny"              # .unwrap() verboten → zwingt zu expect/? /unwrap_or
+expect_used = "warn"              # .expect() nur mit guter Message
+panic = "deny"                    # kein panic!() in Produktion
+todo = "deny"                     # kein todo!() vergessen
+unimplemented = "deny"            # kein unimplemented!() vergessen
+dbg_macro = "deny"                # kein dbg!() im Release
+print_stdout = "warn"             # println! → log::info! verwenden
+print_stderr = "warn"             # eprintln! → log::error! verwenden
+
+# ── Typ-Sicherheit ──
+cast_possible_truncation = "deny" # u64 as u32 = Datenverlust
+cast_sign_loss = "deny"           # i32 as u32 = Vorzeichenverlust  
+cast_precision_loss = "deny"      # u64 as f64 = Präzisionsverlust
+cast_lossless = "deny"            # u8 as u32 → u32::from(u8)
+
+# ── Fehlerbehandlung ──
+map_err_ignore = "deny"           # .map_err(|_| ...) = Info-Verlust
+result_unit_err = "warn"          # Result<T, ()> = nutzloser Error-Typ
+
+# ── Code-Qualität ──
+needless_pass_by_value = "warn"   # fn(String) wo fn(&str) reicht
+needless_pass_by_ref_mut = "warn" # &mut wo & reicht
+implicit_clone = "warn"           # .clone() wo .to_owned() klarer wäre
+redundant_clone = "deny"          # überflüssiges .clone()
+manual_string_new = "warn"        # String::from("") → String::new()
+inefficient_to_string = "warn"    # format!("{}", x) → x.to_string()
+large_types_passed_by_value = "warn"
+
+# ── Erlaubt (zu noisy für diesen Codebase) ──
+module_name_repetitions = "allow" # GpuOcStatus in mod gpu_oc
+too_many_lines = "allow"          # bis Module-Split fertig
+missing_errors_doc = "allow"      # kein rustdoc nötig
+missing_panics_doc = "allow"
+must_use_candidate = "allow"      # zu viele false positives
+return_self_not_must_use = "allow"
+struct_excessive_bools = "allow"
+uninlined_format_args = "allow"   # format!("{}", x) vs format!("{x}") — Style
+doc_markdown = "allow"            # Backticks in Docs — irrelevant
+similar_names = "allow"           # sclk_min/sclk_max etc.
+single_match_else = "allow"       # match mit 1 Arm + else ist ok
+items_after_statements = "allow"  # inner fn nach let ist ok
+wildcard_imports = "allow"        # use super::* in commands
+let_underscore_untyped = "allow"

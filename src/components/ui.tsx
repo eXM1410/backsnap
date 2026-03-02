@@ -1,5 +1,9 @@
-import { ReactNode } from "react";
+import { ReactNode, ComponentType } from "react";
 import { Loader2 } from "lucide-react";
+
+// ─── Shared Icon Type ─────────────────────────────────────────
+
+type IconComponent = ComponentType<{ className?: string }>;
 
 // ─── Card ─────────────────────────────────────────────────────
 
@@ -30,7 +34,7 @@ export function StatCard({
 }: {
   label: string;
   value: string | number;
-  icon: any;
+  icon: IconComponent;
   color?: string;
   sub?: string;
 }) {
@@ -106,13 +110,17 @@ export function Badge({
   color = "cyan",
 }: {
   children: ReactNode;
-  color?: "cyan" | "green" | "red" | "yellow" | "zinc";
+  color?: "cyan" | "green" | "red" | "yellow" | "zinc" | "amber" | "purple" | "blue" | "emerald";
 }) {
-  const colors = {
+  const colors: Record<string, string> = {
     cyan: "bg-cyan-500/10 text-cyan-400 border-cyan-500/20",
     green: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+    emerald: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
     red: "bg-red-500/10 text-red-400 border-red-500/20",
     yellow: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+    amber: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+    purple: "bg-purple-500/10 text-purple-400 border-purple-500/20",
+    blue: "bg-blue-500/10 text-blue-400 border-blue-500/20",
     zinc: "bg-zinc-800 text-zinc-400 border-zinc-700",
   };
 
@@ -167,7 +175,7 @@ export function EmptyState({
   title,
   description,
 }: {
-  icon: any;
+  icon: IconComponent;
   title: string;
   description?: string;
 }) {

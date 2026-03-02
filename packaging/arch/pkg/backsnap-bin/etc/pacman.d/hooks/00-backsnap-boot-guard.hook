@@ -1,0 +1,12 @@
+# backsnap Boot Guard — automatisches Backup der Boot-Entries vor Kernel-Updates
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Type = Package
+Target = linux*
+
+[Action]
+Description = backsnap: Boot-Entry Backup vor Kernel-Update...
+When = PreTransaction
+Exec = /usr/lib/backsnap/backsnap-boot-guard
+Depends = coreutils

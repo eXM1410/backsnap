@@ -7,6 +7,7 @@ export default function Disks() {
   const [disks, setDisks] = useState<DiskInfo[]>([]);
   const [btrfsUsage, setBtrfsUsage] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -22,6 +23,7 @@ export default function Disks() {
         }
       } catch (e) {
         console.error(e);
+        setError(String(e));
       }
       setLoading(false);
     };
@@ -29,6 +31,12 @@ export default function Disks() {
   }, []);
 
   if (loading) return <div className="p-8"><Loading /></div>;
+  if (error && disks.length === 0) return (
+    <div className="p-8">
+      <PageHeader title="Disks" description="NVMe-Laufwerke und Btrfs-Subvolumes" />
+      <Card className="p-6 text-red-400 text-sm">{error}</Card>
+    </div>
+  );
 
   return (
     <div className="p-8">
@@ -48,21 +56,30 @@ export default function Disks() {
                 ? "bg-amber-500"
                 : "bg-cyan-500";
           return (
-            <Card key={i}>
+            <Card key={disk.uuid || disk.name || i}>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
                   <HardDrive className="w-5 h-5 text-zinc-500" />
                   <div>
-                    <h3 className="font-mono text-sm text-cyan-400">
-                      {disk.mountpoint}
-                    </h3>
-                    <p className="text-xs text-zinc-600">{disk.name}</p>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-mono text-sm text-cyan-400">
+                        {disk.mountpoint}
+                      </h3>
+                      {disk.role && (
+                        <Badge color={disk.role === "System Disk" ? "cyan" : disk.role === "Backup Disk" ? "emerald" : "zinc"}>
+                          {disk.role}
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-xs text-zinc-500 mt-0.5">
+                      {disk.model} <span className="text-zinc-700 mx-1">•</span> {disk.name}
+                    </p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
                   <Badge color="zinc">{disk.fstype}</Badge>
                   {disk.uuid && (
-                    <span className="text-xs font-mono text-zinc-600">
+                    <span className="text-xs font-mono text-zinc-600" title={disk.uuid}>
                       {disk.uuid.slice(0, 8)}...
                     </span>
                   )}
@@ -70,16 +87,29 @@ export default function Disks() {
               </div>
               <div className="flex items-center gap-4">
                 <div className="flex-1">
-                  <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all ${color}`}
-                      style={{ width: `${percent}%` }}
-                    />
-                  </div>
+                  {disk.use_percent !== "—" ? (
+                    <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${color}`}
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="w-full h-2 bg-zinc-800/50 rounded-full" />
+                  )}
                 </div>
                 <div className="text-sm text-zinc-400 whitespace-nowrap">
-                  {disk.used} / {disk.size}
-                  <span className="text-zinc-600 ml-1">({disk.use_percent})</span>
+                  {disk.used !== "—" ? (
+                    <>
+                      {disk.used} / {disk.size}
+                      <span className="text-zinc-600 ml-1">({disk.use_percent})</span>
+                    </>
+                  ) : (
+                    <>
+                      {disk.size}
+                      <span className="text-zinc-600 ml-1">(nicht gemountet)</span>
+                    </>
+                  )}
                 </div>
               </div>
             </Card>

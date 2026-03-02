@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Routes, Route, NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -10,8 +10,12 @@ import {
   Terminal,
   Activity,
   Shield,
+  ShieldCheck,
+  Trash2,
+  Gauge,
   PanelLeftClose,
   PanelLeftOpen,
+  Wifi,
 } from "lucide-react";
 import Dashboard from "./pages/Dashboard";
 import Snapshots from "./pages/Snapshots";
@@ -21,13 +25,25 @@ import Disks from "./pages/Disks";
 import Logs from "./pages/Logs";
 import SettingsPage from "./pages/Settings";
 import Monitor from "./pages/Monitor";
+import Cleanup from "./pages/Cleanup";
+import Tuning from "./pages/Tuning";
+import PiRemote from "./pages/PiRemote";
+import BootGuard from "./pages/BootGuard";
+import Widget from "./pages/Widget";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import SetupWizard from "./components/SetupWizard";
+import { api } from "./api";
 
 const nav = [
-  { to: "/", icon: LayoutDashboard, label: "Dashboard" },
+  { to: "/", icon: Activity, label: "Monitor" },
+  { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/snapshots", icon: Camera, label: "Snapshots" },
   { to: "/sync", icon: RefreshCw, label: "NVMe Sync" },
   { to: "/schedule", icon: Clock, label: "Sync-Zeitplan" },
-  { to: "/monitor", icon: Activity, label: "Monitor" },
+  { to: "/cleanup", icon: Trash2, label: "Aufräumen" },
+  { to: "/tuning", icon: Gauge, label: "Tuning" },
+  { to: "/pi", icon: Wifi, label: "Pi Remote" },
+  { to: "/boot-guard", icon: ShieldCheck, label: "Boot Guard" },
   { to: "/disks", icon: HardDrive, label: "Disks" },
   { to: "/logs", icon: Terminal, label: "Logs" },
   { to: "/settings", icon: Settings, label: "Einstellungen" },
@@ -35,10 +51,32 @@ const nav = [
 
 export default function App() {
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
+  const [showWizard, setShowWizard] = useState(false);
+
+  useEffect(() => {
+    api.getConfig().then((cfg) => {
+      if (!cfg.disks.primary_uuid) {
+        setShowWizard(true);
+      }
+    }).catch(() => {
+      // If config can't be loaded, show wizard anyway
+      setShowWizard(true);
+    });
+  }, []);
+
+  // Widget mode — standalone transparent window, no sidebar
+  if (location.pathname === "/widget") {
+    return (
+      <div className="w-screen h-screen bg-transparent">
+        <Widget />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen overflow-hidden">
+      {showWizard && <SetupWizard onComplete={() => setShowWizard(false)} />}
       {/* Sidebar */}
       <aside
         className={`${
@@ -71,7 +109,7 @@ export default function App() {
                     : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
                 }`}
               >
-                <item.icon className="w-4.5 h-4.5 shrink-0" />
+                <item.icon className="w-[18px] h-[18px] shrink-0" />
                 {!collapsed && item.label}
               </NavLink>
             );
@@ -86,10 +124,10 @@ export default function App() {
             title={collapsed ? "Menü aufklappen" : "Menü einklappen"}
           >
             {collapsed ? (
-              <PanelLeftOpen className="w-4.5 h-4.5" />
+              <PanelLeftOpen className="w-[18px] h-[18px]" />
             ) : (
               <>
-                <PanelLeftClose className="w-4.5 h-4.5 mr-2" />
+                <PanelLeftClose className="w-[18px] h-[18px] mr-2" />
                 <span className="text-xs">Einklappen</span>
               </>
             )}
@@ -104,16 +142,22 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/snapshots" element={<Snapshots />} />
-          <Route path="/sync" element={<Sync />} />
-          <Route path="/schedule" element={<Schedule />} />
-          <Route path="/monitor" element={<Monitor />} />
-          <Route path="/disks" element={<Disks />} />
-          <Route path="/logs" element={<Logs />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
+        <ErrorBoundary>
+          <Routes>
+            <Route path="/" element={<Monitor />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/snapshots" element={<Snapshots />} />
+            <Route path="/sync" element={<Sync />} />
+            <Route path="/schedule" element={<Schedule />} />
+            <Route path="/cleanup" element={<Cleanup />} />
+            <Route path="/tuning" element={<Tuning />} />
+            <Route path="/pi" element={<PiRemote />} />
+            <Route path="/boot-guard" element={<BootGuard />} />
+            <Route path="/disks" element={<Disks />} />
+            <Route path="/logs" element={<Logs />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   );

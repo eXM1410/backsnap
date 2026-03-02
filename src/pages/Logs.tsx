@@ -2,27 +2,54 @@ import { useEffect, useState, useRef } from "react";
 import { Terminal, RefreshCw, Download } from "lucide-react";
 import { api } from "../api";
 import { Card, Button, PageHeader, Loading } from "../components/ui";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export default function Logs() {
   const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const unlistenRef = useRef<UnlistenFn | null>(null);
+  const lastRefreshRef = useRef<string[]>([]);
 
   const refresh = async () => {
     try {
-      const l = await api.getSyncLog();
+      const l = await api.getActivityLog();
+      lastRefreshRef.current = l;
       setLogs(l);
+      setError("");
     } catch (e) {
       console.error(e);
+      setError(String(e));
     }
     setLoading(false);
   };
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 5000);
-    return () => clearInterval(interval);
+
+    const setupLive = async () => {
+      const unlisten = await listen<string>("activity-log-line", (event) => {
+        setLogs((prev) => {
+          // Cap at 5000 lines to prevent unbounded growth
+          const next = [...prev, event.payload];
+          return next.length > 5000 ? next.slice(next.length - 5000) : next;
+        });
+      });
+      unlistenRef.current = unlisten;
+    };
+
+    setupLive();
+
+    // Live lines arrive via 'activity-log-line' events. Poll only as a fallback every 30s.
+    const interval = setInterval(refresh, 30000);
+    return () => {
+      clearInterval(interval);
+      if (unlistenRef.current) {
+        unlistenRef.current();
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -42,12 +69,18 @@ export default function Logs() {
   };
 
   if (loading) return <div className="p-8"><Loading /></div>;
+  if (error && logs.length === 0) return (
+    <div className="p-8">
+      <PageHeader title="Logs" description="Live Aktivitäts-Log (Echtzeit + Datei)" />
+      <Card className="p-6 text-red-400 text-sm">{error}</Card>
+    </div>
+  );
 
   return (
     <div className="p-8">
       <PageHeader
         title="Logs"
-        description="nvme-sync Logdatei"
+        description="Live Aktivitäts-Log (Echtzeit + Datei)"
         actions={
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-2 text-sm text-zinc-500 cursor-pointer">
@@ -94,7 +127,7 @@ export default function Logs() {
 
       <div className="mt-3 text-xs text-zinc-600 flex items-center justify-between">
         <span>{logs.length} Zeilen</span>
-        <span>/var/log/backsnap-sync.log</span>
+        <span>~/.local/share/backsnap/activity.log</span>
       </div>
     </div>
   );

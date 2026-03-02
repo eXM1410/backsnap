@@ -1,11 +1,15 @@
 //! System monitor — ported from Systor/sysmon.c
 //! Reads CPU, RAM, Swap, GPU, temperatures and power from /proc and /sys.
 
+use crate::commands::helpers::read_sys_opt;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Instant;
+
+/// Initial sleep (ms) for CPU usage delta on first sysmon call.
+const SYSMON_INITIAL_SAMPLE_MS: u64 = 100;
 
 // ─── Data Structures ──────────────────────────────────────────
 
@@ -19,6 +23,8 @@ pub struct SystemMonitorData {
     pub load: LoadAvg,
     pub uptime: UptimeInfo,
     pub battery: Option<BatteryInfo>,
+    pub extra_power: ExtraPower,
+    pub nvme_temps: Vec<NvmeTemp>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -29,6 +35,7 @@ pub struct CpuInfo {
     pub usage_percent: f64,
     pub per_core_usage: Vec<f64>,
     pub frequency_mhz: Option<f64>,
+    pub architecture: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -81,6 +88,22 @@ pub struct BatteryInfo {
     pub power_watts: f64,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ExtraPower {
+    #[serde(rename = "dram_watts")]
+    pub dram: Option<f64>,
+    #[serde(rename = "platform_watts")]
+    pub platform: Option<f64>,
+    #[serde(rename = "total_system_watts")]
+    pub total_system: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct NvmeTemp {
+    pub name: String,
+    pub temp_celsius: f64,
+}
+
 // ─── Internal CPU State ───────────────────────────────────────
 
 #[derive(Clone, Default)]
@@ -96,7 +119,7 @@ struct CpuTimes {
 }
 
 #[derive(Default)]
-struct RaplState {
+struct RaplDomain {
     energy_uj_path: String,
     max_energy_uj_path: String,
     prev_energy_uj: u64,
@@ -106,16 +129,15 @@ struct RaplState {
 
 struct SensorPaths {
     cpu_temp_input: String,
-    rapl: RaplState,
-    #[allow(dead_code)]
-    gpu_hwmon_base: String,
+    rapl: RaplDomain,
+    rapl_dram: RaplDomain,
+    rapl_psys: RaplDomain,
     gpu_power_path: String,
     gpu_temp_path: String,
     gpu_drm_dir: String,
     bat_power_path: String,
     bat_current_path: String,
     bat_voltage_path: String,
-    #[allow(dead_code)]
     use_nvidia_smi: bool,
 }
 
@@ -141,19 +163,12 @@ fn get_state() -> &'static Mutex<Option<MonitorState>> {
 
 // ─── Sensor Detection (mirrors sysmon.c logic) ───────────────
 
-fn read_text_trim(path: &str) -> Option<String> {
-    fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 fn read_u64(path: &str) -> Option<u64> {
-    read_text_trim(path)?.parse().ok()
+    read_sys_opt(path)?.parse().ok()
 }
 
 fn read_i64(path: &str) -> Option<i64> {
-    read_text_trim(path)?.parse().ok()
+    read_sys_opt(path)?.parse().ok()
 }
 
 fn file_readable(path: &str) -> bool {
@@ -166,18 +181,15 @@ fn detect_cpu_temp() -> String {
         return String::new();
     }
 
-    let entries = match fs::read_dir(hwmon) {
-        Ok(e) => e,
-        Err(_) => return String::new(),
-    };
+    let Ok(entries) = fs::read_dir(hwmon) else { return String::new() };
 
     for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
+        let name = entry.file_name().to_string_lossy().into_owned();
         if !name.starts_with("hwmon") {
             continue;
         }
         let base = entry.path();
-        let sensor_name = read_text_trim(&base.join("name").to_string_lossy());
+        let sensor_name = read_sys_opt(&base.join("name").to_string_lossy());
         match sensor_name.as_deref() {
             Some("coretemp" | "k10temp" | "zenpower") => {}
             _ => continue,
@@ -188,19 +200,21 @@ fn detect_cpu_temp() -> String {
 
         if let Ok(files) = fs::read_dir(&base) {
             for f in files.flatten() {
-                let fname = f.file_name().to_string_lossy().to_string();
+                let fname = f.file_name().to_string_lossy().into_owned();
                 if let Some(rest) = fname.strip_prefix("temp") {
                     if let Some(idx_str) = rest.strip_suffix("_input") {
                         if let Ok(idx) = idx_str.parse::<i32>() {
-                            let input_path = base.join(&fname).to_string_lossy().to_string();
+                            let input_path = base.join(&fname).to_string_lossy().into_owned();
                             if !file_readable(&input_path) {
                                 continue;
                             }
 
                             let mut score = 0i32;
-                            let label_path =
-                                base.join(format!("temp{}_label", idx)).to_string_lossy().to_string();
-                            if let Some(label) = read_text_trim(&label_path) {
+                            let label_path = base
+                                .join(format!("temp{}_label", idx))
+                                .to_string_lossy()
+                                .to_string();
+                            if let Some(label) = read_sys_opt(&label_path) {
                                 if label.contains("Package")
                                     || label.contains("Tdie")
                                     || label.contains("Tctl")
@@ -229,16 +243,18 @@ fn detect_cpu_temp() -> String {
     String::new()
 }
 
-fn detect_rapl() -> RaplState {
-    let mut state = RaplState::default();
+fn detect_rapl() -> (RaplDomain, RaplDomain, RaplDomain) {
+    let mut cpu = RaplDomain::default();
+    let mut dram = RaplDomain::default();
+    let mut psys = RaplDomain::default();
     let pc = Path::new("/sys/class/powercap");
     if !pc.exists() {
-        return state;
+        return (cpu, dram, psys);
     }
 
     if let Ok(entries) = fs::read_dir(pc) {
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
+            let name = entry.file_name().to_string_lossy().into_owned();
             if !name.starts_with("intel-rapl:")
                 && !name.starts_with("amd-rapl:")
                 && !name.starts_with("rapl:")
@@ -252,16 +268,37 @@ fn detect_rapl() -> RaplState {
                 continue;
             }
 
-            state.energy_uj_path = energy.to_string_lossy().to_string();
-            let max_e = base.join("max_energy_range_uj");
-            if max_e.exists() {
-                state.max_energy_uj_path = max_e.to_string_lossy().to_string();
+            // Check the domain name to classify
+            let domain_name = read_sys_opt(&base.join("name").to_string_lossy())
+                .unwrap_or_default()
+                .to_lowercase();
+
+            let is_subdomain = name.matches(':').count() >= 2;
+
+            if domain_name == "dram" || domain_name.contains("dram") {
+                dram.energy_uj_path = energy.to_string_lossy().into_owned();
+                let max_e = base.join("max_energy_range_uj");
+                if max_e.exists() {
+                    dram.max_energy_uj_path = max_e.to_string_lossy().into_owned();
+                }
+            } else if domain_name == "psys" || domain_name.contains("psys") {
+                psys.energy_uj_path = energy.to_string_lossy().into_owned();
+                let max_e = base.join("max_energy_range_uj");
+                if max_e.exists() {
+                    psys.max_energy_uj_path = max_e.to_string_lossy().into_owned();
+                }
+            } else if !is_subdomain && cpu.energy_uj_path.is_empty() {
+                // Top-level package domain (CPU)
+                cpu.energy_uj_path = energy.to_string_lossy().into_owned();
+                let max_e = base.join("max_energy_range_uj");
+                if max_e.exists() {
+                    cpu.max_energy_uj_path = max_e.to_string_lossy().into_owned();
+                }
             }
-            break;
         }
     }
 
-    state
+    (cpu, dram, psys)
 }
 
 fn detect_amdgpu() -> (String, String, String, String) {
@@ -274,20 +311,20 @@ fn detect_amdgpu() -> (String, String, String, String) {
     if let Ok(entries) = fs::read_dir(hwmon) {
         for entry in entries.flatten() {
             let base = entry.path();
-            let sensor_name = read_text_trim(&base.join("name").to_string_lossy());
+            let sensor_name = read_sys_opt(&base.join("name").to_string_lossy());
             if sensor_name.as_deref() != Some("amdgpu") {
                 continue;
             }
 
-            let temp = base.join("temp1_input").to_string_lossy().to_string();
+            let temp = base.join("temp1_input").to_string_lossy().into_owned();
             let temp_path = if file_readable(&temp) {
                 temp
             } else {
                 String::new()
             };
 
-            let pavg = base.join("power1_average").to_string_lossy().to_string();
-            let pinp = base.join("power1_input").to_string_lossy().to_string();
+            let pavg = base.join("power1_average").to_string_lossy().into_owned();
+            let pinp = base.join("power1_input").to_string_lossy().into_owned();
             let power_path = if file_readable(&pavg) {
                 pavg
             } else if file_readable(&pinp) {
@@ -297,7 +334,7 @@ fn detect_amdgpu() -> (String, String, String, String) {
             };
 
             // Find DRM card directory for VRAM and busy%
-            let hwmon_base = base.to_string_lossy().to_string();
+            let hwmon_base = base.to_string_lossy().into_owned();
             let drm_dir = find_drm_card(&base);
 
             return (hwmon_base, temp_path, power_path, drm_dir);
@@ -316,7 +353,7 @@ fn find_drm_card(hwmon_path: &Path) -> String {
     }
     if let Ok(entries) = fs::read_dir(&drm) {
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
+            let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with("card") && !name.contains('-') {
                 let card_path = format!("/sys/class/drm/{}", name);
                 let device_dir = format!("{}/device", card_path);
@@ -327,7 +364,7 @@ fn find_drm_card(hwmon_path: &Path) -> String {
         }
     }
     // Fallback: use device directly
-    let dev_str = device.to_string_lossy().to_string();
+    let dev_str = device.to_string_lossy().into_owned();
     if Path::new(&dev_str).exists() {
         return dev_str;
     }
@@ -343,19 +380,19 @@ fn detect_battery() -> (String, String, String) {
 
     if let Ok(entries) = fs::read_dir(ps) {
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
+            let name = entry.file_name().to_string_lossy().into_owned();
             if !name.starts_with("BAT") {
                 continue;
             }
             let base = entry.path();
 
-            let pnow = base.join("power_now").to_string_lossy().to_string();
+            let pnow = base.join("power_now").to_string_lossy().into_owned();
             if file_readable(&pnow) {
                 return (pnow, String::new(), String::new());
             }
 
-            let cnow = base.join("current_now").to_string_lossy().to_string();
-            let vnow = base.join("voltage_now").to_string_lossy().to_string();
+            let cnow = base.join("current_now").to_string_lossy().into_owned();
+            let vnow = base.join("voltage_now").to_string_lossy().into_owned();
             if file_readable(&cnow) && file_readable(&vnow) {
                 return (String::new(), cnow, vnow);
             }
@@ -367,15 +404,16 @@ fn detect_battery() -> (String, String, String) {
 
 fn detect_sensors_all() -> SensorPaths {
     let cpu_temp_input = detect_cpu_temp();
-    let rapl = detect_rapl();
-    let (gpu_hwmon_base, gpu_temp_path, gpu_power_path, gpu_drm_dir) = detect_amdgpu();
+    let (rapl, rapl_dram, rapl_psys) = detect_rapl();
+    let (_gpu_hwmon_base, gpu_temp_path, gpu_power_path, gpu_drm_dir) = detect_amdgpu();
     let use_nvidia_smi = gpu_temp_path.is_empty() && gpu_power_path.is_empty();
     let (bat_power_path, bat_current_path, bat_voltage_path) = detect_battery();
 
     SensorPaths {
         cpu_temp_input,
         rapl,
-        gpu_hwmon_base,
+        rapl_dram,
+        rapl_psys,
         gpu_power_path,
         gpu_temp_path,
         gpu_drm_dir,
@@ -384,6 +422,96 @@ fn detect_sensors_all() -> SensorPaths {
         bat_voltage_path,
         use_nvidia_smi,
     }
+}
+
+/// Detect NVMe drive temperatures from /sys/class/hwmon.
+/// NVMe controllers expose hwmon sensors with name "nvme" or similar.
+fn detect_nvme_temps() -> Vec<NvmeTemp> {
+    let hwmon = Path::new("/sys/class/hwmon");
+    if !hwmon.exists() {
+        return Vec::new();
+    }
+
+    let mut temps = Vec::new();
+    if let Ok(entries) = fs::read_dir(hwmon) {
+        for entry in entries.flatten() {
+            let base = entry.path();
+            let sensor_name = read_sys_opt(&base.join("name").to_string_lossy());
+            match sensor_name.as_deref() {
+                Some(n) if n.starts_with("nvme") => {}
+                _ => continue,
+            }
+
+            // Try temp1_input (composite temp)
+            let temp_path = base.join("temp1_input").to_string_lossy().into_owned();
+            if let Some(mdeg) = read_i64(&temp_path) {
+                // Try to get the device model name
+                let device_link = base.join("device");
+                let model = if device_link.exists() {
+                    let model_path = device_link.join("model");
+                    read_sys_opt(&model_path.to_string_lossy()).unwrap_or_else(|| {
+                        sensor_name.clone().unwrap_or_else(|| "NVMe".to_string())
+                    })
+                } else {
+                    sensor_name.unwrap_or_else(|| "NVMe".to_string())
+                };
+                temps.push(NvmeTemp {
+                    name: model.trim().to_string(),
+                    #[allow(clippy::cast_precision_loss)] // millidegree sensor value, well within f64 range
+                    temp_celsius: mdeg as f64 / 1000.0,
+                });
+            }
+        }
+    }
+    temps
+}
+
+/// Read a RAPL domain's energy delta and compute instantaneous power in watts.
+fn read_rapl_domain_power(domain: &mut RaplDomain) -> Option<f64> {
+    if domain.energy_uj_path.is_empty() {
+        return None;
+    }
+    let content = match fs::read_to_string(&domain.energy_uj_path) {
+        Ok(c) => c,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                domain.no_permission = true;
+            }
+            return None;
+        }
+    };
+    let energy_uj: u64 = content.trim().parse().ok()?;
+    let now = Instant::now();
+
+    if let Some(prev_time) = domain.prev_time {
+        let dt = now.duration_since(prev_time).as_secs_f64();
+        if dt > 0.001 {
+            let delta = if energy_uj >= domain.prev_energy_uj {
+                energy_uj - domain.prev_energy_uj
+            } else {
+                let max = if domain.max_energy_uj_path.is_empty() {
+                    0
+                } else {
+                    read_u64(&domain.max_energy_uj_path).unwrap_or_default()
+                };
+                if max > domain.prev_energy_uj {
+                    (max - domain.prev_energy_uj) + energy_uj
+                } else {
+                    energy_uj
+                }
+            };
+            // CAST-SAFETY: delta is a µJ energy counter diff; f64 has sufficient precision
+            #[allow(clippy::cast_precision_loss)]
+            let watts = (delta as f64 / 1e6) / dt;
+            domain.prev_energy_uj = energy_uj;
+            domain.prev_time = Some(now);
+            return Some(watts.max(0.0));
+        }
+    }
+
+    domain.prev_energy_uj = energy_uj;
+    domain.prev_time = Some(now);
+    None
 }
 
 // ─── Reading Values ───────────────────────────────────────────
@@ -401,14 +529,14 @@ fn read_cpu_times_all() -> Option<(CpuTimes, Vec<CpuTimes>)> {
             }
 
             let times = CpuTimes {
-                user: parts[1].parse().unwrap_or(0),
-                nice: parts[2].parse().unwrap_or(0),
-                system: parts[3].parse().unwrap_or(0),
-                idle: parts[4].parse().unwrap_or(0),
-                iowait: parts[5].parse().unwrap_or(0),
-                irq: parts[6].parse().unwrap_or(0),
-                softirq: parts[7].parse().unwrap_or(0),
-                steal: parts[8].parse().unwrap_or(0),
+                user: parts[1].parse().unwrap_or_default(),
+                nice: parts[2].parse().unwrap_or_default(),
+                system: parts[3].parse().unwrap_or_default(),
+                idle: parts[4].parse().unwrap_or_default(),
+                iowait: parts[5].parse().unwrap_or_default(),
+                irq: parts[6].parse().unwrap_or_default(),
+                softirq: parts[7].parse().unwrap_or_default(),
+                steal: parts[8].parse().unwrap_or_default(),
             };
 
             if parts[0] == "cpu" {
@@ -426,10 +554,22 @@ fn cpu_usage(prev: &CpuTimes, cur: &CpuTimes) -> f64 {
     let prev_idle = prev.idle + prev.iowait;
     let cur_idle = cur.idle + cur.iowait;
 
-    let prev_total = prev.user + prev.nice + prev.system + prev.idle
-        + prev.iowait + prev.irq + prev.softirq + prev.steal;
-    let cur_total = cur.user + cur.nice + cur.system + cur.idle
-        + cur.iowait + cur.irq + cur.softirq + cur.steal;
+    let prev_total = prev.user
+        + prev.nice
+        + prev.system
+        + prev.idle
+        + prev.iowait
+        + prev.irq
+        + prev.softirq
+        + prev.steal;
+    let cur_total = cur.user
+        + cur.nice
+        + cur.system
+        + cur.idle
+        + cur.iowait
+        + cur.irq
+        + cur.softirq
+        + cur.steal;
 
     let total_d = cur_total.saturating_sub(prev_total);
     let idle_d = cur_idle.saturating_sub(prev_idle);
@@ -437,10 +577,14 @@ fn cpu_usage(prev: &CpuTimes, cur: &CpuTimes) -> f64 {
     if total_d == 0 {
         return 0.0;
     }
+    // CAST-SAFETY: CPU jiffies are small enough that f64 precision loss is negligible
+    #[allow(clippy::cast_precision_loss)]
     let used = (total_d - idle_d) as f64 * 100.0 / total_d as f64;
     used.clamp(0.0, 100.0)
 }
 
+// CAST-SAFETY: memory sizes in KiB from /proc/meminfo; f64 precision loss is negligible for percentages
+#[allow(clippy::cast_precision_loss)]
 fn read_meminfo() -> (MemoryInfo, SwapInfo) {
     let mut mem_total = 0u64;
     let mut mem_avail = 0u64;
@@ -453,7 +597,7 @@ fn read_meminfo() -> (MemoryInfo, SwapInfo) {
             if parts.len() < 2 {
                 continue;
             }
-            let val: u64 = parts[1].parse().unwrap_or(0);
+            let val: u64 = parts[1].parse().unwrap_or_default();
             match parts[0] {
                 "MemTotal:" => mem_total = val,
                 "MemAvailable:" => mem_avail = val,
@@ -503,6 +647,14 @@ fn get_cpu_model() -> String {
     "Unknown CPU".to_string()
 }
 
+fn get_cpu_arch() -> String {
+    std::process::Command::new("uname")
+        .arg("-m")
+        .output()
+        .ok()
+        .filter(|o| o.status.success()).map_or_else(|| "unknown".to_string(), |o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
 fn get_cpu_count() -> (u32, u32) {
     // Returns (physical cores, logical threads)
     let mut threads = 0u32;
@@ -532,7 +684,9 @@ fn get_cpu_count() -> (u32, u32) {
     let cores = if core_ids.is_empty() {
         threads
     } else {
-        core_ids.len() as u32
+        // CAST-SAFETY: CPU physical core count always fits u32
+        #[allow(clippy::cast_possible_truncation)]
+        { core_ids.len() as u32 }
     };
 
     (cores, threads)
@@ -542,7 +696,10 @@ fn get_cpu_freq() -> Option<f64> {
     // Try scaling_cur_freq first (more accurate)
     let cpufreq = Path::new("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
     if let Some(khz) = read_u64(&cpufreq.to_string_lossy()) {
-        return Some(khz as f64 / 1000.0);
+        // CAST-SAFETY: CPU frequency in kHz; f64 precision is more than sufficient
+        #[allow(clippy::cast_precision_loss)]
+        let freq = khz as f64 / 1000.0;
+        return Some(freq);
     }
     // Fallback: average from /proc/cpuinfo
     if let Ok(content) = fs::read_to_string("/proc/cpuinfo") {
@@ -559,7 +716,7 @@ fn get_cpu_freq() -> Option<f64> {
             }
         }
         if count > 0 {
-            return Some(total / count as f64);
+            return Some(total / f64::from(count));
         }
     }
     None
@@ -572,7 +729,7 @@ fn read_gpu_name(drm_dir: &str) -> String {
 
     // Try marketing name via /sys/.../product_name or parse from uevent
     let product = format!("{}/product_name", drm_dir);
-    if let Some(name) = read_text_trim(&product) {
+    if let Some(name) = read_sys_opt(&product) {
         return name;
     }
 
@@ -580,8 +737,8 @@ fn read_gpu_name(drm_dir: &str) -> String {
     let uevent = format!("{}/uevent", drm_dir);
     if let Ok(content) = fs::read_to_string(&uevent) {
         for line in content.lines() {
-            if line.starts_with("PCI_ID=") {
-                return format!("GPU ({})", &line[7..]);
+            if let Some(stripped) = line.strip_prefix("PCI_ID=") {
+                return format!("GPU ({})", stripped);
             }
         }
     }
@@ -603,7 +760,7 @@ fn read_gpu_name(drm_dir: &str) -> String {
         }
     }
 
-    "AMD GPU".to_string()
+    "Unknown GPU".to_string()
 }
 
 fn read_gpu_vram(drm_dir: &str) -> (Option<u64>, Option<u64>) {
@@ -629,61 +786,49 @@ fn read_gpu_busy(drm_dir: &str) -> Option<u64> {
     read_u64(&busy_path)
 }
 
-fn read_rapl_power(rapl: &mut RaplState) -> Option<f64> {
-    if rapl.energy_uj_path.is_empty() {
+/// Query nvidia-smi for GPU info (temp, power, utilization, vram, name)
+/// Returns (name, temp_c, power_w, vram_total_mib, vram_used_mib, gpu_busy_pct)
+type NvidiaSmiInfo = (
+    String,
+    Option<f64>,
+    Option<f64>,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+);
+
+fn read_nvidia_smi() -> Option<NvidiaSmiInfo> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=name,temperature.gpu,power.draw,memory.total,memory.used,utilization.gpu",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
         return None;
     }
-
-    // Try to read energy_uj
-    let content = match fs::read_to_string(&rapl.energy_uj_path) {
-        Ok(c) => c,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                rapl.no_permission = true;
-            }
-            return None;
-        }
-    };
-
-    let energy_uj: u64 = match content.trim().parse() {
-        Ok(v) => v,
-        Err(_) => return None,
-    };
-
-    let now = Instant::now();
-
-    if let Some(prev_time) = rapl.prev_time {
-        let dt = now.duration_since(prev_time).as_secs_f64();
-        if dt > 0.001 {
-            let delta = if energy_uj >= rapl.prev_energy_uj {
-                energy_uj - rapl.prev_energy_uj
-            } else {
-                // Wraparound
-                let max = if !rapl.max_energy_uj_path.is_empty() {
-                    read_u64(&rapl.max_energy_uj_path).unwrap_or(0)
-                } else {
-                    0
-                };
-                if max > rapl.prev_energy_uj {
-                    (max - rapl.prev_energy_uj) + energy_uj
-                } else {
-                    energy_uj
-                }
-            };
-
-            let watts = (delta as f64 / 1e6) / dt;
-            rapl.prev_energy_uj = energy_uj;
-            rapl.prev_time = Some(now);
-            return Some(watts.max(0.0));
-        }
+    let line = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = line.trim().split(", ").collect();
+    if parts.len() < 6 {
+        return None;
     }
-
-    rapl.prev_energy_uj = energy_uj;
-    rapl.prev_time = Some(now);
-    None // Need at least 2 reads
+    let name = parts[0].to_string();
+    let temp = parts[1].parse::<f64>().ok();
+    let power = parts[2].parse::<f64>().ok();
+    let vram_total = parts[3].parse::<u64>().ok();
+    let vram_used = parts[4].parse::<u64>().ok();
+    let gpu_busy = parts[5].parse::<u64>().ok();
+    Some((name, temp, power, vram_total, vram_used, gpu_busy))
 }
 
-fn read_battery_from_paths(power_path: &str, current_path: &str, voltage_path: &str) -> Option<BatteryInfo> {
+// CAST-SAFETY: µW / µA / µV sensor values from sysfs; f64 precision loss is negligible
+#[allow(clippy::cast_precision_loss)]
+fn read_battery_from_paths(
+    power_path: &str,
+    current_path: &str,
+    voltage_path: &str,
+) -> Option<BatteryInfo> {
     if !power_path.is_empty() {
         if let Some(uw) = read_i64(power_path) {
             return Some(BatteryInfo {
@@ -691,10 +836,7 @@ fn read_battery_from_paths(power_path: &str, current_path: &str, voltage_path: &
             });
         }
     } else if !current_path.is_empty() && !voltage_path.is_empty() {
-        if let (Some(ua), Some(uv)) = (
-            read_i64(current_path),
-            read_i64(voltage_path),
-        ) {
+        if let (Some(ua), Some(uv)) = (read_i64(current_path), read_i64(voltage_path)) {
             return Some(BatteryInfo {
                 power_watts: (ua as f64 * uv as f64) / 1e12,
             });
@@ -705,9 +847,11 @@ fn read_battery_from_paths(power_path: &str, current_path: &str, voltage_path: &
 
 // ─── Main Read Function ──────────────────────────────────────
 
-pub fn read_system_monitor() -> SystemMonitorData {
+pub(crate) fn read_system_monitor() -> SystemMonitorData {
     let state_mutex = get_state();
-    let mut guard = state_mutex.lock().unwrap();
+    let Ok(mut guard) = state_mutex.lock() else {
+        return SystemMonitorData::default();
+    };
 
     // Initialize on first call — detect sensors and cache static info
     if guard.is_none() {
@@ -717,9 +861,20 @@ pub fn read_system_monitor() -> SystemMonitorData {
         let gpu_name = read_gpu_name(&sensors.gpu_drm_dir);
         let cpu_model = get_cpu_model();
 
+        // Brief sleep + second read to get a meaningful initial CPU usage delta
+        // (without this, the first call always returns 0%)
+        std::thread::sleep(std::time::Duration::from_millis(SYSMON_INITIAL_SAMPLE_MS));
+        let (total2, cores2) = read_cpu_times_all().unwrap_or_default();
+        let initial_usage = cpu_usage(&total, &total2);
+        let initial_per_core: Vec<f64> = cores
+            .iter()
+            .zip(cores2.iter())
+            .map(|(prev, cur)| cpu_usage(prev, cur))
+            .collect();
+
         *guard = Some(MonitorState {
-            prev_cpu_total: total,
-            prev_cpu_cores: cores,
+            prev_cpu_total: total2,
+            prev_cpu_cores: cores2,
             sensors,
             cached: CachedStatic {
                 cpu_model: cpu_model.clone(),
@@ -738,9 +893,10 @@ pub fn read_system_monitor() -> SystemMonitorData {
                 model: cpu_model,
                 cores: cores_count,
                 threads,
-                usage_percent: 0.0,
-                per_core_usage: Vec::new(),
+                usage_percent: initial_usage,
+                per_core_usage: initial_per_core,
                 frequency_mhz: get_cpu_freq(),
+                architecture: get_cpu_arch(),
             },
             memory,
             swap,
@@ -752,10 +908,14 @@ pub fn read_system_monitor() -> SystemMonitorData {
             load: read_loadavg(),
             uptime: read_uptime_info(),
             battery: None,
+            extra_power: ExtraPower::default(),
+            nvme_temps: detect_nvme_temps(),
         };
     }
 
-    let state = guard.as_mut().unwrap();
+    let Some(state) = guard.as_mut() else {
+        return SystemMonitorData::default();
+    };
 
     // Read CPU delta (requires prev state)
     let (cur_total, cur_cores) = read_cpu_times_all().unwrap_or_default();
@@ -772,14 +932,17 @@ pub fn read_system_monitor() -> SystemMonitorData {
     state.prev_cpu_cores = cur_cores;
 
     // RAPL power (needs mutable state for prev_energy)
-    let cpu_power = read_rapl_power(&mut state.sensors.rapl);
+    let cpu_power = read_rapl_domain_power(&mut state.sensors.rapl);
     let rapl_no_perm = state.sensors.rapl.no_permission;
+    let dram_power = read_rapl_domain_power(&mut state.sensors.rapl_dram);
+    let psys_power = read_rapl_domain_power(&mut state.sensors.rapl_psys);
 
     // Copy out what we need from state, then DROP the lock
     let cpu_temp_path = state.sensors.cpu_temp_input.clone();
     let gpu_temp_path = state.sensors.gpu_temp_path.clone();
     let gpu_power_path = state.sensors.gpu_power_path.clone();
     let gpu_drm_dir = state.sensors.gpu_drm_dir.clone();
+    let use_nvidia = state.sensors.use_nvidia_smi;
     let cached = CachedStatic {
         cpu_model: state.cached.cpu_model.clone(),
         cores: state.cached.cores,
@@ -798,28 +961,21 @@ pub fn read_system_monitor() -> SystemMonitorData {
     let (memory, swap) = read_meminfo();
 
     // CPU sensor
-    let cpu_temp = if !cpu_temp_path.is_empty() {
-        read_i64(&cpu_temp_path).map(|mdeg| mdeg as f64 / 1000.0)
-    } else {
-        None
-    };
+    let cpu_temp = read_temp_celsius(&cpu_temp_path);
 
-    // GPU (all sysfs reads, no subprocess)
-    let gpu_temp = if !gpu_temp_path.is_empty() {
-        read_i64(&gpu_temp_path).map(|mdeg| mdeg as f64 / 1000.0)
-    } else {
-        None
-    };
-    let gpu_power = if !gpu_power_path.is_empty() {
-        read_u64(&gpu_power_path).map(|uw| uw as f64 / 1e6)
-    } else {
-        None
-    };
-    let (vram_total, vram_used) = read_gpu_vram(&gpu_drm_dir);
-    let gpu_busy = read_gpu_busy(&gpu_drm_dir);
+    // GPU
+    let (gpu_name, gpu_temp, gpu_power, vram_total, vram_used, gpu_busy) =
+        read_gpu_sensors(use_nvidia, &cached.gpu_name, &gpu_temp_path, &gpu_power_path, &gpu_drm_dir);
 
     // Battery (use cloned paths)
-    let battery = read_battery_from_paths(&bat_sensors_clone.0, &bat_sensors_clone.1, &bat_sensors_clone.2);
+    let battery = read_battery_from_paths(
+        &bat_sensors_clone.0,
+        &bat_sensors_clone.1,
+        &bat_sensors_clone.2,
+    );
+
+    let nvme_temps = detect_nvme_temps();
+    let total_system_watts = compute_total_power(psys_power, cpu_power, gpu_power, dram_power);
 
     SystemMonitorData {
         cpu: CpuInfo {
@@ -829,6 +985,7 @@ pub fn read_system_monitor() -> SystemMonitorData {
             usage_percent: cpu_pct,
             per_core_usage: per_core,
             frequency_mhz: get_cpu_freq(),
+            architecture: get_cpu_arch(),
         },
         memory,
         swap,
@@ -838,7 +995,7 @@ pub fn read_system_monitor() -> SystemMonitorData {
             power_no_permission: rapl_no_perm,
         },
         gpu: GpuInfo {
-            name: cached.gpu_name,
+            name: gpu_name,
             temp_celsius: gpu_temp,
             power_watts: gpu_power,
             vram_total_mib: vram_total,
@@ -848,7 +1005,64 @@ pub fn read_system_monitor() -> SystemMonitorData {
         load: read_loadavg(),
         uptime: read_uptime_info(),
         battery,
+        extra_power: ExtraPower {
+            dram: dram_power,
+            platform: psys_power,
+            total_system: total_system_watts,
+        },
+        nvme_temps,
     }
+}
+
+// ─── Sensor Helpers ───────────────────────────────────────────
+
+/// Read millidegree temperature from sysfs and convert to °C.
+// CAST-SAFETY: millidegrees from sysfs sensor; f64 precision is more than sufficient
+#[allow(clippy::cast_precision_loss)]
+fn read_temp_celsius(path: &str) -> Option<f64> {
+    if path.is_empty() { return None; }
+    read_i64(path).map(|mdeg| mdeg as f64 / 1000.0)
+}
+
+/// Returns (name, temp_c, power_w, vram_total_mib, vram_used_mib, gpu_busy_pct)
+type GpuSensorInfo = (String, Option<f64>, Option<f64>, Option<u64>, Option<u64>, Option<u64>);
+
+/// Read GPU sensors from AMD sysfs or nvidia-smi.
+fn read_gpu_sensors(
+    use_nvidia: bool,
+    fallback_name: &str,
+    temp_path: &str,
+    power_path: &str,
+    drm_dir: &str,
+) -> GpuSensorInfo {
+    if use_nvidia {
+        return read_nvidia_smi()
+            .unwrap_or_else(|| (fallback_name.to_string(), None, None, None, None, None));
+    }
+    let temp = read_temp_celsius(temp_path);
+    // CAST-SAFETY: microwatts from sysfs sensor; f64 precision is sufficient
+    #[allow(clippy::cast_precision_loss)]
+    let power = if power_path.is_empty() {
+        None
+    } else {
+        read_u64(power_path).map(|uw| uw as f64 / 1e6)
+    };
+    let (vt, vu) = read_gpu_vram(drm_dir);
+    let busy = read_gpu_busy(drm_dir);
+    (fallback_name.to_string(), temp, power, vt, vu, busy)
+}
+
+/// Compute total system power: prefer platform (psys), else sum known sources.
+fn compute_total_power(
+    psys: Option<f64>,
+    cpu: Option<f64>,
+    gpu: Option<f64>,
+    dram: Option<f64>,
+) -> Option<f64> {
+    if psys.is_some() { return psys; }
+    let sources = [cpu, gpu, dram];
+    let sum: f64 = sources.iter().filter_map(|s| *s).sum();
+    if sources.iter().any(std::option::Option::is_some) { Some(sum) } else { None }
 }
 
 fn read_loadavg() -> LoadAvg {
@@ -869,6 +1083,8 @@ fn read_uptime_info() -> UptimeInfo {
     if let Ok(content) = fs::read_to_string("/proc/uptime") {
         if let Some(val) = content.split_whitespace().next() {
             if let Ok(secs) = val.parse::<f64>() {
+                // CAST-SAFETY: /proc/uptime is always ≥0; value safely fits u64
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let total = secs as u64;
                 let days = total / 86400;
                 let hours = (total % 86400) / 3600;
