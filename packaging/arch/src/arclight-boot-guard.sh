@@ -1,1 +1,0 @@
-/home/max/backsnap/packaging/arch/arclight-boot-guard.sh

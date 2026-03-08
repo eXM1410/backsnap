@@ -24,9 +24,10 @@ Thumbs.db
 .env
 .env.*
 
-# Packaging build artifacts (binaries, built packages, tarballs)
+# Packaging build artifacts (binaries, built packages, tarballs, makepkg dirs)
 packaging/arch/backsnap
-packaging/arch/src/backsnap
+packaging/arch/arclight
+packaging/arch/src/
 packaging/arch/pkg/
 packaging/arch/*.pkg.tar.zst
 packaging/arch/*.tar.gz

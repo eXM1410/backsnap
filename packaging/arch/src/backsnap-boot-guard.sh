@@ -1,1 +1,0 @@
-/home/max/backsnap/packaging/arch/backsnap-boot-guard.sh
