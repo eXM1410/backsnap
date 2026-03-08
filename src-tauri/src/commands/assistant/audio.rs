@@ -284,10 +284,10 @@ pub(crate) fn tts_speak(text: &str, wait: bool) -> Result<String, String> {
     Ok("ok".into())
 }
 
-/// Stream raw PCM from Orpheus directly into mpv — first audio plays
-/// after ~300ms instead of waiting for the full WAV generation (~3s).
-/// Uses mpv instead of pw-cat because pw-cat silently loses audio on
-/// repeated invocations (PipeWire/WirePlumber AEC routing bug).
+/// Stream PCM from Orpheus into mpv with a fake WAV header for realtime
+/// playback.  The WAV header tells mpv the format upfront (s16le 24kHz mono)
+/// so it doesn't use the raw demuxer — this avoids the loud pop/crackle
+/// that raw-mode mpv produces when stdin closes.
 fn tts_speak_streaming(text: &str, wait: bool) -> Result<String, String> {
     let payload = serde_json::json!({
         "input": text,
@@ -311,17 +311,10 @@ fn tts_speak_streaming(text: &str, wait: bool) -> Result<String, String> {
         return Err(format!("Orpheus stream error: {status}"));
     }
 
-    // Spawn mpv for raw PCM playback: s16le 24kHz mono via stdin
+    // Spawn mpv — feed a WAV header first so mpv knows the format without
+    // --demuxer=rawaudio.  Using max data_size; mpv stops cleanly at EOF.
     let mut player = Command::new("mpv")
-        .args([
-            "--demuxer=rawaudio",
-            "--demuxer-rawaudio-format=s16le",
-            "--demuxer-rawaudio-rate=24000",
-            "--demuxer-rawaudio-channels=1",
-            "--no-terminal",
-            "--no-video",
-            "-",
-        ])
+        .args(["--no-video", "--really-quiet", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -333,7 +326,34 @@ fn tts_speak_streaming(text: &str, wait: bool) -> Result<String, String> {
 
     let mut player_stdin = player.stdin.take().ok_or("mpv: no stdin")?;
 
-    // Stream HTTP response body → mpv stdin
+    // Write a WAV header with maximum data length — mpv reads until EOF.
+    // s16le, 24000 Hz, mono
+    let max_data: u32 = 0x7FFF_FFFF;
+    let wav_header: [u8; 44] = {
+        let mut h = [0u8; 44];
+        h[0..4].copy_from_slice(b"RIFF");
+        h[4..8].copy_from_slice(&(36 + max_data).to_le_bytes());
+        h[8..12].copy_from_slice(b"WAVE");
+        h[12..16].copy_from_slice(b"fmt ");
+        h[16..20].copy_from_slice(&16u32.to_le_bytes()); // chunk size
+        h[20..22].copy_from_slice(&1u16.to_le_bytes());  // PCM
+        h[22..24].copy_from_slice(&1u16.to_le_bytes());  // mono
+        h[24..28].copy_from_slice(&24000u32.to_le_bytes()); // sample rate
+        h[28..32].copy_from_slice(&48000u32.to_le_bytes()); // byte rate
+        h[32..34].copy_from_slice(&2u16.to_le_bytes());  // block align
+        h[34..36].copy_from_slice(&16u16.to_le_bytes()); // bits per sample
+        h[36..40].copy_from_slice(b"data");
+        h[40..44].copy_from_slice(&max_data.to_le_bytes());
+        h
+    };
+    if player_stdin.write_all(&wav_header).is_err() {
+        let _ = player.wait();
+        clear_pid_if(&ACTIVE_TTS_PID, player_pid);
+        dec_speaking();
+        return Err("mpv closed before WAV header".into());
+    }
+
+    // Stream HTTP response body → mpv stdin (realtime)
     let mut buf = [0u8; 8192];
     loop {
         match response.read(&mut buf) {
@@ -350,7 +370,7 @@ fn tts_speak_streaming(text: &str, wait: bool) -> Result<String, String> {
         }
     }
 
-    // Close stdin → mpv drains buffer and exits
+    // Close stdin → mpv drains buffer and exits cleanly (no pop)
     drop(player_stdin);
 
     if wait {
