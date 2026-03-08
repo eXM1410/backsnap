@@ -103,7 +103,7 @@ fn parse_segment(segment: &str, inherited_scope: Option<Scope>) -> Option<Parsed
 /// Fast-parse common query commands so they bypass the LLM entirely.
 /// This also catches frequent Whisper misrecognitions (e.g. "Eistatus" for "Pi Status").
 fn parse_query(segment: &str) -> Option<ParsedSegment> {
-    // Pi Status (+ Whisper misrecognitions: "eistatus", "pistatus", "pie status")
+    // Pi Status (+ Whisper misrecognitions: "eistatus", "feinstatus", "pistatus", etc.)
     if contains_any(
         segment,
         &[
@@ -111,6 +111,8 @@ fn parse_query(segment: &str) -> Option<ParsedSegment> {
             "pistatus",
             "eistatus",
             "eis status",
+            "feinstatus",
+            "fein status",
             "pie status",
             "pi 4 status",
             "pi 5 status",
@@ -158,7 +160,6 @@ fn parse_query(segment: &str) -> Option<ParsedSegment> {
             "gpu temp",
             "wie warm ist die gpu",
             "wie warmsige gpu",
-            "evam cpu",
             "gpu info",
             "vram",
             "wie viel vram",
