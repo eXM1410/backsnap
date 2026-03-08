@@ -613,20 +613,10 @@ fn execute_tool(call: &ToolCall) -> ActionResult {
                 action,
                 success: true,
                 message: format!(
-                    "GPU {}: {:.0}°C edge, {:.0}°C junction, {:.0}°C memory. \
-                         Clock {} MHz (max {}). VRAM {} MHz. \
-                         Power {}W of {}W cap. Fan {} RPM ({}). Load {}%.",
-                    gpu.gpu_name,
+                    "GPU: {:.0}°C, junction {:.0}°C. Power {}W. Load {}%.",
                     gpu.temps.edge,
                     gpu.temps.junction,
-                    gpu.temps.mem,
-                    gpu.clocks.current_sclk_mhz,
-                    gpu.clocks.sclk_max,
-                    gpu.clocks.current_mclk_mhz,
                     gpu.power.current_w,
-                    gpu.power.cap_w,
-                    gpu.fan.rpm,
-                    gpu.fan.mode,
                     gpu.gpu_busy_percent
                 ),
             },
@@ -639,34 +629,46 @@ fn execute_tool(call: &ToolCall) -> ActionResult {
         "fan_status" => match corsair::corsair_ccxt_poll() {
             Ok(status) => {
                 let val = serde_json::to_value(&status).unwrap_or_default();
-                let mut parts = Vec::new();
+                let mut fan_rpms = Vec::new();
+                let mut fan_duty: Option<u64> = None;
+                let mut temp_parts = Vec::new();
                 if let Some(fans) = val["fans"].as_array() {
                     for f in fans {
                         if f["connected"].as_bool().unwrap_or(false) {
-                            let ch = f["channel"].as_u64().unwrap_or(0);
                             let rpm = f["rpm"].as_i64().unwrap_or(0);
                             let duty = f["duty"].as_u64().unwrap_or(0);
-                            parts.push(format!("Fan {ch}: {rpm} RPM ({duty}%)"));
+                            fan_rpms.push(rpm);
+                            fan_duty = Some(duty);
                         }
                     }
                 }
                 if let Some(temps) = val["temps"].as_array() {
                     for t in temps {
                         if t["connected"].as_bool().unwrap_or(false) {
-                            let ch = t["channel"].as_u64().unwrap_or(0);
                             let temp = t["temp"].as_f64().unwrap_or(0.0);
-                            parts.push(format!("Probe {ch}: {temp:.1}°C"));
+                            temp_parts.push(format!("{temp:.1}°C"));
                         }
                     }
                 }
+                let msg = if fan_rpms.is_empty() {
+                    "No fan data available".into()
+                } else {
+                    let count = fan_rpms.len();
+                    let avg_rpm = fan_rpms.iter().sum::<i64>() / count as i64;
+                    let duty_str = fan_duty
+                        .map(|d| format!(" at {d}%"))
+                        .unwrap_or_default();
+                    let temp_str = if temp_parts.is_empty() {
+                        String::new()
+                    } else {
+                        format!(". Coolant {}.", temp_parts.join(", "))
+                    };
+                    format!("{count} fans, average {avg_rpm} RPM{duty_str}{temp_str}")
+                };
                 ActionResult {
                     action,
                     success: true,
-                    message: if parts.is_empty() {
-                        "No fan data available".into()
-                    } else {
-                        parts.join(". ")
-                    },
+                    message: msg,
                 }
             }
             Err(e) => ActionResult {
@@ -689,14 +691,24 @@ fn execute_tool(call: &ToolCall) -> ActionResult {
                                 .cpu_usage
                                 .map(|u| format!("{u:.0}%"))
                                 .unwrap_or_else(|| "n/a".into());
-                            let mem = match (p.mem_used_mb, p.mem_total_mb) {
-                                (Some(u), Some(t)) => format!("{u}/{t} MB"),
-                                _ => "n/a".into(),
+                            // Short label: "Raspberry Pi 5 Model B Rev 1.0" → "Pi 5"
+                            let short = if p.label.contains('5') {
+                                "Pi 5"
+                            } else if p.label.contains('4') {
+                                "Pi 4"
+                            } else {
+                                &p.label
                             };
-                            let up = p.uptime.as_deref().unwrap_or("n/a");
-                            format!("{}: {temp}, CPU {cpu}, RAM {mem}, uptime {up}", p.label)
+                            format!("{short}: {temp}, CPU {cpu}")
                         } else {
-                            format!("{}: offline", p.label)
+                            let short = if p.label.contains('5') {
+                                "Pi 5"
+                            } else if p.label.contains('4') {
+                                "Pi 4"
+                            } else {
+                                &p.label
+                            };
+                            format!("{short}: offline")
                         }
                     })
                     .collect();
@@ -802,27 +814,20 @@ fn execute_tool(call: &ToolCall) -> ActionResult {
         "system_status" => match block_on_async(health::get_system_status()) {
             Ok(ss) => {
                 let v = serde_json::to_value(&ss).unwrap_or_default();
-                let hostname = v["hostname"].as_str().unwrap_or("unknown");
-                let kernel = v["kernel"].as_str().unwrap_or("unknown");
                 let uptime = v["uptime"].as_str().unwrap_or("unknown");
-                let mut disk_info = Vec::new();
-                if let Some(disks) = v["disks"].as_array() {
-                    for d in disks {
-                        let name = d["name"].as_str().unwrap_or("disk");
+                // Only report the main disk (first one)
+                let main_disk = v["disks"].as_array().and_then(|disks| {
+                    disks.first().map(|d| {
                         let used = d["use_percent"].as_str().unwrap_or("?");
-                        disk_info.push(format!("{name}: {used}"));
-                    }
-                }
+                        format!("Main disk {used}")
+                    })
+                });
                 ActionResult {
                     action,
                     success: true,
                     message: format!(
-                        "Host: {hostname}. Kernel: {kernel}. Uptime: {uptime}. Disk usage: {}.",
-                        if disk_info.is_empty() {
-                            "n/a".into()
-                        } else {
-                            disk_info.join(", ")
-                        }
+                        "Uptime: {uptime}. {}.",
+                        main_disk.unwrap_or_else(|| "Disk info unavailable".into())
                     ),
                 }
             }
