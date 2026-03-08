@@ -151,10 +151,8 @@ fn parse_fan(segment: &str) -> Option<ParsedSegment> {
         segment,
         &[
             "luefter",
-            "luefter",
             "fan",
             "fans",
-            "geblase",
             "geblaese",
             "ventilator",
         ],
