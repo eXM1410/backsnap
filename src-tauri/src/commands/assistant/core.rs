@@ -200,7 +200,14 @@ pub(crate) struct PreparedAssistantResponse {
 }
 
 fn block_on_async<F: std::future::Future>(f: F) -> F::Output {
-    tokio::runtime::Handle::current().block_on(f)
+    // Try the Tauri/Tokio runtime handle first (available on main + Tauri threads).
+    // Falls back to a one-shot runtime for plain std::thread spawns (e.g. voice-prepare).
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(f),
+        Err(_) => tokio::runtime::Runtime::new()
+            .expect("failed to create fallback tokio runtime")
+            .block_on(f),
+    }
 }
 
 fn call_llm(history: &[ChatMessage]) -> Result<String, String> {
