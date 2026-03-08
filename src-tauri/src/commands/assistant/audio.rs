@@ -12,7 +12,7 @@ const JARVIS_DATA_DIR: &str = "/home/max/.local/share/jarvis";
 const ASSISTANT_SPEAKING_PATH: &str = "/home/max/.local/share/jarvis/assistant_speaking.txt";
 const LISTEN_ONCE_SCRIPT: &str = "/home/max/.local/share/jarvis/transcribe_once.py";
 const WHISPER_SERVER_URL: &str = "http://127.0.0.1:8178";
-const ORPHEUS_TTS_MODELS_URL: &str = "http://127.0.0.1:5005/v1/models";
+const ORPHEUS_TTS_HEALTH_URL: &str = "http://127.0.0.1:5005/";
 const ORPHEUS_TTS_SPEECH_URL: &str = "http://127.0.0.1:5005/v1/audio/speech";
 const ORPHEUS_TTS_STREAM_URL: &str = "http://127.0.0.1:5005/v1/audio/speech/stream";
 
@@ -170,7 +170,7 @@ pub fn ensure_orpheus_tts_running() {
 
 fn orpheus_tts_alive() -> bool {
     http_client()
-        .get(ORPHEUS_TTS_MODELS_URL)
+        .get(ORPHEUS_TTS_HEALTH_URL)
         .timeout(std::time::Duration::from_secs(2))
         .send()
         .map(|response| response.status().is_success())
