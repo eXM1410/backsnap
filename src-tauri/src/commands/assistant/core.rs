@@ -9,6 +9,7 @@ use super::super::lighting;
 use super::super::openrgb;
 use super::super::pi_remote;
 use super::super::snapshots;
+use super::super::pi_tent;
 use super::super::timer;
 use super::super::tuning;
 use super::audio::stop_music_playback;
@@ -22,6 +23,7 @@ const QUERY_ACTIONS: &[&str] = &[
     "system_info",
     "fan_status",
     "pi_status",
+    "tent_status",
     "snapshot_list",
     "timer_info",
     "system_status",
@@ -91,6 +93,7 @@ Status Queries (use these when asked about system status, temperatures, etc.):
 - pi_status: Raspberry Pi temperatures, CPU, memory, uptime for all Pis. Params: {}
 - snapshot_list: Recent BTRFS snapshots and count. Params: {}
 - timer_info: Backup timer schedule, last run, status. Params: {}
+- tent_status: Grow tent sensor data: temperature, humidity, VPD, light status, water tank fill level (percent + liters). Params: {}
 - system_status: System hostname, uptime, disk usage overview. Params: {}
 
 DEVICES IN THE HOUSE:
@@ -99,6 +102,7 @@ DEVICES IN THE HOUSE:
 - Pis: Raspberry Pi 4 (plant watering relay, bubatz services), Raspberry Pi 5 (Govee MQTT bridge)
 - GPU: AMD Radeon RX 7900 XTX (ROCm, OC capable)
 - Climate: Comfee dehumidifier (automatically controlled)
+- Grow Tent: Sensor (temp, humidity, VPD), Mars Hydro grow light, water tank with level sensor (on Pi 4)
 - Storage: BTRFS with snapper snapshots, NVMe backup sync
 
 IMPORTANT: The user speaks German but you ALWAYS reply in English. Understand German input, respond in English.
@@ -143,6 +147,9 @@ User: "Wie warm ist die GPU?"
 
 User: "Wie geht's den Lüftern?"
 → {"reply": "Checking fans.", "actions": [{"action":"fan_status","params":{}}]}
+
+User: "Wie voll ist der Tank?" or "Wie ist der Tankinhalt?" or "Zeltstatus"
+→ {"reply": "Checking the tent.", "actions": [{"action":"tent_status","params":{}}]}
 
 User: "Mach einen Snapshot"
 → {"reply": "Creating a snapshot now, Sir.", "actions": [{"action":"snapshot_create","params":{"description":"Manual snapshot via Jarvis"}}]}
@@ -753,6 +760,38 @@ fn execute_tool(call: &ToolCall) -> ActionResult {
                 message: format!("Timer info error: {e}"),
             },
         },
+        "tent_status" => {
+            let ts = block_on_async(pi_tent::get_pi_tent_status());
+            let mut parts = Vec::new();
+            if let Some(sensor) = &ts.sensor {
+                parts.push(format!(
+                    "Tent: {:.1}°C, {:.1}% humidity, VPD {:.2}, battery {}%",
+                    sensor.temp, sensor.humi, sensor.vpd, sensor.batt
+                ));
+            }
+            if let Some(light) = &ts.light {
+                parts.push(format!(
+                    "Light: {} ({}%)",
+                    if light.power { "on" } else { "off" },
+                    light.brightness
+                ));
+            }
+            if let Some(tank) = &ts.tank {
+                parts.push(format!(
+                    "Tank: {:.0}% ({:.1} liters)",
+                    tank.percent, tank.liters
+                ));
+            }
+            ActionResult {
+                action,
+                success: ts.ok,
+                message: if parts.is_empty() {
+                    ts.error.unwrap_or_else(|| "Tent offline".into())
+                } else {
+                    parts.join(". ")
+                },
+            }
+        }
         "system_status" => match block_on_async(health::get_system_status()) {
             Ok(ss) => {
                 let v = serde_json::to_value(&ss).unwrap_or_default();
