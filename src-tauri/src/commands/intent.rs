@@ -113,6 +113,8 @@ fn parse_query(segment: &str) -> Option<ParsedSegment> {
             "eis status",
             "feinstatus",
             "fein status",
+            "heilsstatus",
+            "pallstatus",
             "pie status",
             "pi 4 status",
             "pi 5 status",
