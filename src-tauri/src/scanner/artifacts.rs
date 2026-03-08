@@ -296,7 +296,9 @@ fn is_runtime_extension_node_modules(abs: &Path, home: &Path, project_root: Opti
         }
     }
 
-    let Ok(rel) = abs.strip_prefix(home) else { return false };
+    let Ok(rel) = abs.strip_prefix(home) else {
+        return false;
+    };
 
     let segments: Vec<String> = rel
         .components()
@@ -306,9 +308,13 @@ fn is_runtime_extension_node_modules(abs: &Path, home: &Path, project_root: Opti
         })
         .collect();
 
-    let Some(ext_idx) = segments.iter().position(|s| s == "extensions") else { return false };
+    let Some(ext_idx) = segments.iter().position(|s| s == "extensions") else {
+        return false;
+    };
 
-    let Some(nm_idx) = segments.iter().rposition(|s| s == "node_modules") else { return false };
+    let Some(nm_idx) = segments.iter().rposition(|s| s == "node_modules") else {
+        return false;
+    };
 
     if ext_idx >= nm_idx {
         return false;

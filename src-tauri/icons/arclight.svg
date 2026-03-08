@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <!-- Main gradient: cyan to violet arc -->
+    <linearGradient id="arcGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00E5FF"/>
+      <stop offset="50%" stop-color="#7C4DFF"/>
+      <stop offset="100%" stop-color="#E040FB"/>
+    </linearGradient>
+    <!-- Shield background -->
+    <linearGradient id="bgGrad" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#1A1A2E"/>
+      <stop offset="100%" stop-color="#0F0F1A"/>
+    </linearGradient>
+    <!-- Glow filter -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Subtle outer glow -->
+    <filter id="outerGlow">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feComposite in="blur" in2="SourceGraphic" operator="out" result="glowOut"/>
+      <feMerge>
+        <feMergeNode in="glowOut"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Shield shape (rounded) -->
+  <path d="M256 28 C140 28 48 72 48 72 L48 240 C48 380 256 484 256 484 C256 484 464 380 464 240 L464 72 C464 72 372 28 256 28Z"
+        fill="url(#bgGrad)" stroke="url(#arcGrad)" stroke-width="8" stroke-linejoin="round"/>
+
+  <!-- Inner arc / lightning bolt -->
+  <g filter="url(#glow)">
+    <!-- Arc shape: stylized electric arc -->
+    <path d="M180 160 C180 160 220 140 256 140 C292 140 332 160 332 160
+             C332 160 350 200 350 240 C350 300 310 350 256 370
+             C202 350 162 300 162 240 C162 200 180 160 180 160Z"
+          fill="none" stroke="url(#arcGrad)" stroke-width="6" stroke-linecap="round" opacity="0.4"/>
+
+    <!-- Central lightning bolt -->
+    <path d="M275 150 L235 255 L275 245 L240 365"
+          fill="none" stroke="url(#arcGrad)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Small sparks -->
+    <circle cx="200" cy="200" r="4" fill="#00E5FF" opacity="0.8"/>
+    <circle cx="320" cy="210" r="3" fill="#E040FB" opacity="0.8"/>
+    <circle cx="190" cy="300" r="3" fill="#7C4DFF" opacity="0.7"/>
+    <circle cx="330" cy="290" r="4" fill="#00E5FF" opacity="0.7"/>
+  </g>
+</svg>

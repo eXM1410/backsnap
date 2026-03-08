@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "backsnap",
+  "productName": "arclight",
   "version": "0.1.0",
-  "identifier": "com.backsnap.app",
+  "identifier": "com.arclight.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,14 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "Backsnap - System Backup Manager",
+        "title": "Arclight",
         "label": "main",
         "width": 1080,
         "height": 1105,
         "minWidth": 620,
         "minHeight": 500,
-        "maxWidth": 1180,
-        "maxHeight": 1205,
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
@@ -29,7 +27,7 @@
     "trayIcon": {
       "id": "main-tray",
       "iconPath": "icons/32x32.png",
-      "tooltip": "Backsnap - System Backup Manager"
+      "tooltip": "Arclight"
     },
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"

@@ -428,8 +428,12 @@ fn is_safe_to_delete(
 
 fn is_runtime_extension_path(rel_path: &str) -> bool {
     let segments: Vec<&str> = rel_path.split('/').filter(|s| !s.is_empty()).collect();
-    let Some(ext_idx) = segments.iter().position(|s| *s == "extensions") else { return false };
-    let Some(nm_idx) = segments.iter().rposition(|s| *s == "node_modules") else { return false };
+    let Some(ext_idx) = segments.iter().position(|s| *s == "extensions") else {
+        return false;
+    };
+    let Some(nm_idx) = segments.iter().rposition(|s| *s == "node_modules") else {
+        return false;
+    };
     if ext_idx >= nm_idx {
         return false;
     }
@@ -598,7 +602,9 @@ fn ai_review_item(
     let strict_preamble = "Return ONLY one JSON object with EXACT keys: downgrade (boolean), confidence (number 0..1 = how sure path is SAFE to delete), note (string). No markdown, no code fences, no explanations.";
     let primary_prompt = format!("{}\n{}", strict_preamble, prompt);
 
-    let Some(mut content) = request_llm_text(&client, &endpoint, &model, &primary_prompt) else { return AiReviewOutcome::Unavailable };
+    let Some(mut content) = request_llm_text(&client, &endpoint, &model, &primary_prompt) else {
+        return AiReviewOutcome::Unavailable;
+    };
 
     let mut parsed = parse_json_object(&content);
     if parsed.is_none() {
@@ -618,9 +624,13 @@ fn ai_review_item(
         }
     }
 
-    let Some(parsed) = parsed else { return AiReviewOutcome::NoJudgment };
+    let Some(parsed) = parsed else {
+        return AiReviewOutcome::NoJudgment;
+    };
 
-    let Some(downgrade) = parsed.get("downgrade").and_then(serde_json::Value::as_bool) else { return AiReviewOutcome::NoJudgment };
+    let Some(downgrade) = parsed.get("downgrade").and_then(serde_json::Value::as_bool) else {
+        return AiReviewOutcome::NoJudgment;
+    };
     let confidence = match parsed.get("confidence").and_then(serde_json::Value::as_f64) {
         Some(v) if (0.0..=1.0).contains(&v) => v,
         _ => return AiReviewOutcome::NoJudgment,
@@ -713,7 +723,9 @@ fn request_llm_text(
     }
 
     for (url, body) in unique {
-        let Ok(response) = client.post(&url).json(&body).send() else { continue };
+        let Ok(response) = client.post(&url).json(&body).send() else {
+            continue;
+        };
         if !response.status().is_success() {
             continue;
         }

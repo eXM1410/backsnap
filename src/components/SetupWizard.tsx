@@ -119,7 +119,7 @@ export default function SetupWizard({ onComplete }: Props) {
         <div className="bg-gradient-to-r from-cyan-900/40 to-zinc-900/40 border-b border-zinc-800 px-6 py-5 flex items-center gap-3">
           <Shield className="w-7 h-7 text-cyan-400" />
           <div>
-            <h2 className="text-lg font-bold">backsnap einrichten</h2>
+            <h2 className="text-lg font-bold">arclight einrichten</h2>
             <p className="text-xs text-zinc-400">
               {step === "welcome" && "Willkommen — Erster Start"}
               {step === "primary" && "Schritt 1 von 2 — Primäre Disk wählen"}
@@ -135,7 +135,7 @@ export default function SetupWizard({ onComplete }: Props) {
           {step === "welcome" && (
             <div className="space-y-4">
               <p className="text-zinc-300 text-sm leading-relaxed">
-                backsnap sichert dein System auf eine zweite NVMe-Disk — so dass du
+                arclight sichert dein System auf eine zweite NVMe-Disk — so dass du
                 direkt von der Backup-Disk booten kannst, falls die primäre Disk
                 ausfällt.
               </p>

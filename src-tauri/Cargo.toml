@@ -1,5 +1,5 @@
 [package]
-name = "backsnap"
+name = "arclight"
 version = "0.1.0"
 description = "System Backup & Recovery Manager"
 authors = ["Max"]
@@ -30,7 +30,11 @@ jwalk = "0.8"
 rayon = "1.10"
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-window-state = "2"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
+base64 = "0.22"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
 
 # ─── Strict Compiler & Clippy Lints ───────────────────────────
 # Ziel: Compiler so streng wie möglich, damit KI-generierter Code

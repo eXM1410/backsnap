@@ -132,15 +132,32 @@ fn remove_rsync_conflicts(dst: &str, rel_paths: &[String]) {
 }
 
 /// Build rsync argument list. `extra_info` appended to `--info=stats1`.
-fn build_rsync_args(src: &str, dst: &str, excludes: &[String], delete: bool, extra_info: &str) -> Vec<String> {
-    let info = if extra_info.is_empty() { "stats1".to_string() } else { format!("stats1,{extra_info}") };
+fn build_rsync_args(
+    src: &str,
+    dst: &str,
+    excludes: &[String],
+    delete: bool,
+    extra_info: &str,
+) -> Vec<String> {
+    let info = if extra_info.is_empty() {
+        "stats1".to_string()
+    } else {
+        format!("stats1,{extra_info}")
+    };
     let mut args = vec![
-        "-aAXx".into(), format!("--info={info}"), "--no-inc-recursive".into(),
-        "--numeric-ids".into(), "--force".into(),
+        "-aAXx".into(),
+        format!("--info={info}"),
+        "--no-inc-recursive".into(),
+        "--numeric-ids".into(),
+        "--force".into(),
     ];
     // NOTE: Do NOT use --delete-excluded — would remove .snapshots on dest.
-    if delete { args.push("--delete".into()); }
-    for exc in excludes { args.push(format!("--exclude={exc}")); }
+    if delete {
+        args.push("--delete".into());
+    }
+    for exc in excludes {
+        args.push(format!("--exclude={exc}"));
+    }
     args.push(src.into());
     args.push(dst.into());
     args
@@ -148,7 +165,10 @@ fn build_rsync_args(src: &str, dst: &str, excludes: &[String], delete: bool, ext
 
 /// Run rsync blocking (ionice when root, pkexec when not). Retries once on exit 23.
 pub(super) fn run_rsync(
-    src: &str, dst: &str, excludes: &[String], delete: bool,
+    src: &str,
+    dst: &str,
+    excludes: &[String],
+    delete: bool,
 ) -> Result<CommandResult, String> {
     let run = |args: &[String]| -> CommandResult {
         let refs: Vec<&str> = args.iter().map(std::string::String::as_str).collect();
@@ -165,39 +185,57 @@ pub(super) fn run_rsync(
     let args = build_rsync_args(src, dst, excludes, delete, "");
     let result = run(&args);
 
-    if result.success || result.exit_code == 24 { return Ok(result); }
+    if result.success || result.exit_code == 24 {
+        return Ok(result);
+    }
     // Self-heal type-conflicts (symlink vs dir) and retry once
     if result.exit_code == 23 {
         let rels = parse_rsync_make_way_paths(&result.stderr);
         if !rels.is_empty() {
             remove_rsync_conflicts(dst, &rels);
             let retry = run(&args);
-            if retry.success || retry.exit_code == 24 { return Ok(retry); }
+            if retry.success || retry.exit_code == 24 {
+                return Ok(retry);
+            }
         }
     }
-    Err(format!("rsync {} -> {}: exit={} {}", src, dst, result.exit_code, truncate_stderr(&result.stderr, 20)))
+    Err(format!(
+        "rsync {} -> {}: exit={} {}",
+        src,
+        dst,
+        result.exit_code,
+        truncate_stderr(&result.stderr, 20)
+    ))
 }
 
 // ─── Streaming rsync with live byte progress ──────────────────
 
 /// Spawn rsync streaming progress2 events to the frontend. Retries once on exit 23.
 pub(super) fn run_rsync_streaming(
-    src: &str, dst: &str, excludes: &[String], delete: bool, phase_name: &str,
+    src: &str,
+    dst: &str,
+    excludes: &[String],
+    delete: bool,
+    phase_name: &str,
 ) -> Result<CommandResult, String> {
     let args = build_rsync_args(src, dst, excludes, delete, "progress2");
 
     let mut child = {
         let (cmd, full) = if is_root() {
             let mut v = vec!["-c3".to_string(), "rsync".to_string()];
-            v.extend(args); ("ionice", v)
+            v.extend(args);
+            ("ionice", v)
         } else {
             let mut v = vec!["rsync".to_string()];
-            v.extend(args); ("pkexec", v)
+            v.extend(args);
+            ("pkexec", v)
         };
-        Command::new(cmd).args(&full)
+        Command::new(cmd)
+            .args(&full)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .spawn().map_err(|e| format!("{cmd} rsync spawn: {e}"))?
+            .spawn()
+            .map_err(|e| format!("{cmd} rsync spawn: {e}"))?
     };
 
     let stdout = child.stdout.take().ok_or("rsync: no stdout")?;
@@ -271,12 +309,25 @@ pub(super) fn run_rsync_streaming(
             let rels = parse_rsync_make_way_paths(&stderr_str);
             if !rels.is_empty() {
                 remove_rsync_conflicts(dst, &rels);
-                if let Ok(r) = run_rsync(src, dst, excludes, delete) { return Ok(r); }
+                if let Ok(r) = run_rsync(src, dst, excludes, delete) {
+                    return Ok(r);
+                }
             }
         }
-        return Err(format!("rsync {} -> {}: exit={} {}", src, dst, exit_code, truncate_stderr(&stderr_str, 20)));
+        return Err(format!(
+            "rsync {} -> {}: exit={} {}",
+            src,
+            dst,
+            exit_code,
+            truncate_stderr(&stderr_str, 20)
+        ));
     }
-    Ok(CommandResult { success: true, stdout: stdout_str, stderr: stderr_str, exit_code })
+    Ok(CommandResult {
+        success: true,
+        stdout: stdout_str,
+        stderr: stderr_str,
+        exit_code,
+    })
 }
 
 /// Parse an rsync --info=progress2 progress line.
@@ -292,7 +343,11 @@ fn parse_rsync_progress2(line: &str) -> Option<(u64, u8, String)> {
     let pct: u8 = tokens.last()?.parse().ok()?;
     let bytes: u64 = tokens.first()?.replace(',', "").parse().ok()?;
     let after = trimmed[pct_idx + 1..].trim();
-    let speed = after.split_whitespace().next().unwrap_or_default().to_string();
+    let speed = after
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string();
     Some((bytes, pct, speed))
 }
 
@@ -397,7 +452,7 @@ pub async fn run_sync(app: tauri::AppHandle) -> Result<CommandResult, String> {
     result
 }
 
-/// Spawn a single `pkexec backsnap --sync-elevated` subprocess and relay
+/// Spawn a single `pkexec arclight --sync-elevated` subprocess and relay
 /// JSON progress lines as Tauri events. **One pkexec prompt** for the entire sync.
 fn run_sync_elevated(app: &tauri::AppHandle) -> Result<CommandResult, String> {
     relay_elevated_subprocess(app, &["--sync-elevated"])
@@ -418,12 +473,17 @@ impl SyncMode {
     fn progress(&self, step: &str, detail: &str, pct: u8) {
         match self {
             Self::Elevated => emit_sync_progress(step, detail, pct),
-            Self::Headless => println!("backsnap: {}", detail),
+            Self::Headless => println!("arclight: {}", detail),
         }
     }
 
     fn rsync(
-        &self, src: &str, dst: &str, excludes: &[String], delete: bool, phase: &str,
+        &self,
+        src: &str,
+        dst: &str,
+        excludes: &[String],
+        delete: bool,
+        phase: &str,
     ) -> Result<CommandResult, String> {
         match self {
             Self::Elevated => run_rsync_streaming(src, dst, excludes, delete, phase),
@@ -441,13 +501,22 @@ impl SyncMode {
 
 /// Map percentage index to progress value in [10..95].
 fn phase_pct(i: usize, per_phase: f32) -> u8 {
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-    { (10.0 + (i as f32 * per_phase)).min(95.0) as u8 }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    {
+        (10.0 + (i as f32 * per_phase)).min(95.0) as u8
+    }
 }
 
 /// Build the exclude list for a subvolume based on its source mount.
 fn excludes_for_subvol(
-    source: &str, c: &AppConfig, log_path: &str, log_prefix: &str,
+    source: &str,
+    c: &AppConfig,
+    log_path: &str,
+    log_prefix: &str,
 ) -> Vec<String> {
     let home_mp = super::helpers::get_home_mountpoint();
     let home_trimmed = home_mp.trim_end_matches('/');
@@ -466,7 +535,15 @@ fn excludes_for_subvol(
     };
     let clean = sanitize_excludes(&raw);
     if clean.len() != raw.len() {
-        sync_log(log_path, &format!("{}: Excludes normalisiert ({} -> {})", log_prefix, raw.len(), clean.len()));
+        sync_log(
+            log_path,
+            &format!(
+                "{}: Excludes normalisiert ({} -> {})",
+                log_prefix,
+                raw.len(),
+                clean.len()
+            ),
+        );
     }
     clean
 }
@@ -480,9 +557,13 @@ fn post_root_sync(mnt: &str, c: &AppConfig, backup_dev: &str) {
     let primary_efi_uuid = get_partition_uuid(&primary_efi_dev);
 
     if let Err(e) = patch_backup_fstab(
-        mnt, &c.disks.primary_uuid, &c.disks.backup_uuid,
-        &primary_efi_uuid, &backup_efi_uuid,
-        &c.sync.shared_subvolumes, &c.sync.log_path,
+        mnt,
+        &c.disks.primary_uuid,
+        &c.disks.backup_uuid,
+        &primary_efi_uuid,
+        &backup_efi_uuid,
+        &c.sync.shared_subvolumes,
+        &c.sync.log_path,
     ) {
         sync_log(&c.sync.log_path, &format!("WARNUNG fstab-Patch: {}", e));
     }
@@ -491,7 +572,10 @@ fn post_root_sync(mnt: &str, c: &AppConfig, backup_dev: &str) {
     for sv in &c.sync.shared_subvolumes {
         let dir = format!("{}/mnt/{}", mnt, sv.trim_start_matches('@'));
         if let Err(e) = fs::create_dir_all(&dir) {
-            sync_log(&c.sync.log_path, &format!("WARNUNG: Mountpoint {} erstellen: {}", dir, e));
+            sync_log(
+                &c.sync.log_path,
+                &format!("WARNUNG: Mountpoint {} erstellen: {}", dir, e),
+            );
         }
     }
 }
@@ -504,7 +588,13 @@ fn sync_boot(c: &AppConfig, mode: &SyncMode, backup_dev: &str) {
 
     let mount_res = run_privileged("mount", &["-o", "rw", &backup_efi, boot_mnt]);
     if !mount_res.success {
-        sync_log(&c.sync.log_path, &format!("WARNUNG: Konnte Backup-EFI {} nicht mounten: {}", backup_efi, mount_res.stderr));
+        sync_log(
+            &c.sync.log_path,
+            &format!(
+                "WARNUNG: Konnte Backup-EFI {} nicht mounten: {}",
+                backup_efi, mount_res.stderr
+            ),
+        );
         return;
     }
     let _boot_guard = AutoUmount(boot_mnt.to_string());
@@ -520,25 +610,52 @@ fn sync_boot(c: &AppConfig, mode: &SyncMode, backup_dev: &str) {
     }
 
     // Update systemd-boot on backup ESP
-    let bl = run_privileged("bootctl", &["update", &format!("--esp-path={}", boot_mnt), "--no-variables"]);
+    let bl = run_privileged(
+        "bootctl",
+        &[
+            "update",
+            &format!("--esp-path={}", boot_mnt),
+            "--no-variables",
+        ],
+    );
     let bl_err = bl.stderr.trim();
     if bl.success {
-        sync_log(&c.sync.log_path, "Bootloader-Update (systemd-boot) auf Backup-EFI OK.");
+        sync_log(
+            &c.sync.log_path,
+            "Bootloader-Update (systemd-boot) auf Backup-EFI OK.",
+        );
     } else if bl_err.contains("same boot loader version in place already") {
-        sync_log(&c.sync.log_path, &format!("Bootloader-Update: bereits aktuell. {}", bl_err));
+        sync_log(
+            &c.sync.log_path,
+            &format!("Bootloader-Update: bereits aktuell. {}", bl_err),
+        );
     } else {
-        sync_log(&c.sync.log_path, &format!("WARNUNG Bootloader-Update: {}", bl_err));
+        sync_log(
+            &c.sync.log_path,
+            &format!("WARNUNG Bootloader-Update: {}", bl_err),
+        );
     }
 
     if let Err(e) = patch_backup_boot_entries(
-        boot_mnt, &c.disks.primary_uuid, &c.disks.backup_uuid, &c.disks.backup_label, &c.sync.log_path,
+        boot_mnt,
+        &c.disks.primary_uuid,
+        &c.disks.backup_uuid,
+        &c.disks.backup_label,
+        &c.sync.log_path,
     ) {
-        sync_log(&c.sync.log_path, &format!("WARNUNG Boot-Entry-Patch: {}", e));
+        sync_log(
+            &c.sync.log_path,
+            &format!("WARNUNG Boot-Entry-Patch: {}", e),
+        );
     }
 
     write_cross_boot_entries(
-        boot_mnt, &c.disks.primary_uuid, &c.disks.backup_uuid,
-        &c.disks.primary_label, &c.disks.backup_label, &c.sync.log_path,
+        boot_mnt,
+        &c.disks.primary_uuid,
+        &c.disks.backup_uuid,
+        &c.disks.primary_label,
+        &c.disks.backup_label,
+        &c.sync.log_path,
     );
 }
 
@@ -556,24 +673,42 @@ fn sync_single_subvol(
     let mnt = format!("{}-{}", ctx.mount_base, sv.name);
     let log_prefix = format!("Phase {}/{}: {}", n, total, sv.source);
 
-    mode.progress(&sv.name, &format!("[{n}/{total}] {} synchronisieren...", sv.source), phase_pct(n - 1, ppp));
+    mode.progress(
+        &sv.name,
+        &format!("[{n}/{total}] {} synchronisieren...", sv.source),
+        phase_pct(n - 1, ppp),
+    );
     sync_log(&c.sync.log_path, &format!("{} ...", log_prefix));
 
-    mount_subvol(&ctx.backup_dev, &mnt, &sv.subvol, &c.sync.mount_options)
-        .map_err(|e| { sync_log(&c.sync.log_path, &format!("FEHLER mount {}: {}", sv.subvol, e)); e })?;
+    mount_subvol(&ctx.backup_dev, &mnt, &sv.subvol, &c.sync.mount_options).map_err(|e| {
+        sync_log(
+            &c.sync.log_path,
+            &format!("FEHLER mount {}: {}", sv.subvol, e),
+        );
+        e
+    })?;
     let _umount = AutoUmount(mnt.clone());
 
     let excludes = excludes_for_subvol(&sv.source, c, &c.sync.log_path, &log_prefix);
-    let src = if sv.source.ends_with('/') { sv.source.clone() } else { format!("{}/", sv.source) };
+    let src = if sv.source.ends_with('/') {
+        sv.source.clone()
+    } else {
+        format!("{}/", sv.source)
+    };
 
     match mode.rsync(&src, &format!("{}/", mnt), &excludes, sv.delete, &sv.name) {
         Ok(r) => {
-            let stats: Vec<&str> = r.stdout.lines()
-                .filter(|l| l.contains("bytes") || l.contains("transferred")).collect();
+            let stats: Vec<&str> = r
+                .stdout
+                .lines()
+                .filter(|l| l.contains("bytes") || l.contains("transferred"))
+                .collect();
             let msg = format!("{} OK. {}", sv.name, stats.join(" | "));
             sync_log(&c.sync.log_path, &msg);
             #[allow(clippy::print_stdout)]
-            if matches!(mode, SyncMode::Headless) { println!("backsnap: {}", msg); }
+            if matches!(mode, SyncMode::Headless) {
+                println!("arclight: {}", msg);
+            }
         }
         Err(e) => {
             sync_log(&c.sync.log_path, &format!("FEHLER {}-Sync: {}", sv.name, e));
@@ -581,7 +716,9 @@ fn sync_single_subvol(
         }
     }
 
-    if sv.source == "/" { post_root_sync(&mnt, c, &ctx.backup_dev); }
+    if sv.source == "/" {
+        post_root_sync(&mnt, c, &ctx.backup_dev);
+    }
     cleanup_backup_snapshots(&mnt, &sv.name, &c.sync.log_path);
     mode.progress(&sv.name, &format!("{} fertig", sv.name), phase_pct(n, ppp));
     Ok(())
@@ -592,18 +729,37 @@ pub(super) fn sync_core(c: &AppConfig, mode: &SyncMode) -> Result<CommandResult,
     rotate_log(&c.sync.log_path, c.sync.log_max_lines);
 
     mode.progress("init", "Preflight-Check...", 0);
-    if !cmd_exists("rsync") { return Err("rsync nicht installiert".to_string()); }
+    if !cmd_exists("rsync") {
+        return Err("rsync nicht installiert".to_string());
+    }
 
     let ctx = detect_sync_direction(c)?;
-    sync_log(&c.sync.log_path, &format!("=== Sync Start{}: {} ===", mode.label(), ctx.direction));
+    sync_log(
+        &c.sync.log_path,
+        &format!("=== Sync Start{}: {} ===", mode.label(), ctx.direction),
+    );
     mode.progress("init", &format!("Richtung: {}", ctx.direction), 5);
 
-    let sv_names: Vec<&str> = c.sync.subvolumes.iter().map(|sv| sv.subvol.as_str()).collect();
-    ensure_backup_subvolumes(&ctx.backup_dev, &sv_names, &c.sync.mount_options, &c.sync.log_path);
+    let sv_names: Vec<&str> = c
+        .sync
+        .subvolumes
+        .iter()
+        .map(|sv| sv.subvol.as_str())
+        .collect();
+    ensure_backup_subvolumes(
+        &ctx.backup_dev,
+        &sv_names,
+        &c.sync.mount_options,
+        &c.sync.log_path,
+    );
 
     let total = c.sync.subvolumes.len() + usize::from(c.boot.sync_enabled);
     #[allow(clippy::cast_precision_loss)]
-    let ppp = if total > 0 { 80.0_f32 / total as f32 } else { 80.0 };
+    let ppp = if total > 0 {
+        80.0_f32 / total as f32
+    } else {
+        80.0
+    };
 
     // ── Sync subvolumes ──
     for (i, sv) in c.sync.subvolumes.iter().enumerate() {
@@ -612,15 +768,31 @@ pub(super) fn sync_core(c: &AppConfig, mode: &SyncMode) -> Result<CommandResult,
 
     // ── Boot sync (optional) ──
     if c.boot.sync_enabled {
-        let _efi_lock = EfiMountLock::acquire().map_err(|e| format!("EFI-Lock fehlgeschlagen: {}", e))?;
-        mode.progress("boot", &format!("[{total}/{total}] Boot synchronisieren..."), phase_pct(c.sync.subvolumes.len(), ppp));
-        sync_log(&c.sync.log_path, &format!("Phase {t}/{t}: Sync /boot ...", t = total));
+        let _efi_lock =
+            EfiMountLock::acquire().map_err(|e| format!("EFI-Lock fehlgeschlagen: {}", e))?;
+        mode.progress(
+            "boot",
+            &format!("[{total}/{total}] Boot synchronisieren..."),
+            phase_pct(c.sync.subvolumes.len(), ppp),
+        );
+        sync_log(
+            &c.sync.log_path,
+            &format!("Phase {t}/{t}: Sync /boot ...", t = total),
+        );
         sync_boot(c, mode, &ctx.backup_dev);
     }
 
     let dur = format_duration(start_time.elapsed().as_secs());
     mode.progress("done", &format!("Sync abgeschlossen in {}", dur), 100);
-    sync_log(&c.sync.log_path, &format!("=== Sync fertig{}: {} (Dauer: {}) ===", mode.label(), ctx.direction, dur));
+    sync_log(
+        &c.sync.log_path,
+        &format!(
+            "=== Sync fertig{}: {} (Dauer: {}) ===",
+            mode.label(),
+            ctx.direction,
+            dur
+        ),
+    );
 
     Ok(CommandResult {
         success: true,
@@ -658,7 +830,10 @@ pub async fn get_sync_log() -> Result<Vec<String>, String> {
         let c = cfg();
         let content = fs::read_to_string(&c.sync.log_path)
             .unwrap_or_else(|_| "Log nicht vorhanden".to_string());
-        let all: Vec<String> = content.lines().map(std::string::ToString::to_string).collect();
+        let all: Vec<String> = content
+            .lines()
+            .map(std::string::ToString::to_string)
+            .collect();
         if all.len() > SYNC_LOG_MAX_TAIL {
             Ok(all[all.len() - SYNC_LOG_MAX_TAIL..].to_vec())
         } else {
@@ -699,7 +874,7 @@ pub async fn get_system_monitor() -> Result<crate::sysmon::SystemMonitorData, St
 
 // ─── Elevated Sync CLI ────────────────────────────────────────
 
-/// CLI entry point for `pkexec backsnap --sync-elevated`.
+/// CLI entry point for `pkexec arclight --sync-elevated`.
 /// Runs the full sync as root, streaming JSON progress lines to stdout.
 /// The GUI reads these lines and relays them as Tauri events.
 ///
@@ -708,7 +883,7 @@ pub async fn get_system_monitor() -> Result<crate::sysmon::SystemMonitorData, St
 #[allow(clippy::print_stderr, clippy::needless_pass_by_value)]
 pub fn run_sync_elevated_cli(config_path_override: Option<String>) -> i32 {
     if let Err(e) = preload_cli_config(config_path_override.as_deref()) {
-        eprintln!("backsnap: {}", e);
+        eprintln!("arclight: {}", e);
         return 1;
     }
     emit_cli_result(do_sync(), "FEHLER (elevated)")
@@ -810,6 +985,7 @@ mod tests {
                 root_subvol: "@".to_string(),
                 root_config: "root".to_string(),
             },
+            pi_remote: crate::config::PiRemoteConfig { devices: vec![] },
         };
         let result = detect_sync_direction(&cfg);
         assert!(result.is_err());

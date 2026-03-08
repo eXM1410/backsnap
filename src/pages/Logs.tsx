@@ -127,7 +127,7 @@ export default function Logs() {
 
       <div className="mt-3 text-xs text-zinc-600 flex items-center justify-between">
         <span>{logs.length} Zeilen</span>
-        <span>~/.local/share/backsnap/activity.log</span>
+        <span>~/.local/share/arclight/activity.log</span>
       </div>
     </div>
   );

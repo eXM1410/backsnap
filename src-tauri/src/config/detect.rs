@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use super::boot::detect_bootloader;
-use super::types::BootloaderType;
 use super::disk::detect_btrfs_disks;
+use super::types::BootloaderType;
 use super::types::*;
 use crate::util::{parse_size_to_bytes, safe_cmd, safe_cmd_timeout};
 
@@ -225,7 +225,10 @@ const BASE_HOME_EXCLUDES: &[&str] = &[
 
 /// Build the home_excludes list from quick filesystem checks (no `du` or `find`).
 fn build_home_excludes(username: &str, has_kde: bool) -> Vec<String> {
-    let mut seen: HashSet<String> = BASE_HOME_EXCLUDES.iter().map(|s| (*s).to_string()).collect();
+    let mut seen: HashSet<String> = BASE_HOME_EXCLUDES
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     let mut exc: Vec<String> = seen.iter().cloned().collect();
 
     if has_kde {
@@ -373,9 +376,7 @@ pub fn auto_detect_config() -> AppConfig {
     let (subvolumes, shared_subvolumes) = h_subvols
         .join()
         .unwrap_or_else(|_| (Vec::new(), Vec::new()));
-    let bootloader = h_bootloader
-        .join()
-        .unwrap_or(BootloaderType::SystemdBoot);
+    let bootloader = h_bootloader.join().unwrap_or(BootloaderType::SystemdBoot);
     let mount_options = h_mount_opts
         .join()
         .unwrap_or_else(|_| "compress=zstd,noatime".to_string());
@@ -393,13 +394,25 @@ pub fn auto_detect_config() -> AppConfig {
     let primary_uuid = boot_disk.map(|d| d.uuid.clone()).unwrap_or_default();
     let primary_label = boot_disk.map_or_else(
         || "Primary Disk".to_string(),
-        |d| if d.model.is_empty() { d.label.clone() } else { d.model.clone() },
+        |d| {
+            if d.model.is_empty() {
+                d.label.clone()
+            } else {
+                d.model.clone()
+            }
+        },
     );
 
     let backup_uuid = backup_disk.map(|d| d.uuid.clone()).unwrap_or_default();
     let backup_label = backup_disk.map_or_else(
         || "Backup Disk".to_string(),
-        |d| if d.model.is_empty() { d.label.clone() } else { d.model.clone() },
+        |d| {
+            if d.model.is_empty() {
+                d.label.clone()
+            } else {
+                d.model.clone()
+            }
+        },
     );
 
     let is_arch = std::path::Path::new("/var/cache/pacman").exists();
@@ -409,7 +422,8 @@ pub fn auto_detect_config() -> AppConfig {
 
     let root_subvol_name = subvolumes
         .iter()
-        .find(|s| s.source == "/").map_or_else(|| "@".to_string(), |s| s.subvol.clone());
+        .find(|s| s.source == "/")
+        .map_or_else(|| "@".to_string(), |s| s.subvol.clone());
 
     let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
 
@@ -421,7 +435,7 @@ pub fn auto_detect_config() -> AppConfig {
 
     let log_path = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("backsnap")
+        .join("arclight")
         .join("sync.log")
         .to_string_lossy()
         .to_string();
@@ -434,12 +448,12 @@ pub fn auto_detect_config() -> AppConfig {
             backup_label,
         },
         sync: SyncConfig {
-            timer_unit: "backsnap-sync.timer".to_string(),
-            service_unit: "backsnap-sync.service".to_string(),
+            timer_unit: "arclight-sync.timer".to_string(),
+            service_unit: "arclight-sync.service".to_string(),
             log_path,
             log_max_lines: 2000,
             mount_options,
-            mount_base: "/mnt/backsnap".to_string(),
+            mount_base: "/mnt/arclight".to_string(),
             subvolumes,
             system_excludes: {
                 let mut exc = vec![

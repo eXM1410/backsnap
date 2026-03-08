@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod config;
+mod gateway;
 mod scanner;
 pub(crate) mod sysfs;
 mod sysmon;
@@ -21,7 +22,7 @@ use tauri_plugin_window_state::{AppHandleExt as _, Builder as WindowStateBuilder
 pub fn run() {
     // Single-instance guard via lockfile
     let lock_path = format!(
-        "{}/backsnap.lock",
+        "{}/arclight.lock",
         std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into())
     );
     let lock_file = std::fs::File::create(&lock_path).expect("Cannot create lock file");
@@ -30,7 +31,7 @@ pub fn run() {
     #[allow(unsafe_code)]
     let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if ret != 0 {
-        eprintln!("backsnap läuft bereits");
+        eprintln!("arclight läuft bereits");
         std::process::exit(0);
     }
     // Keep lock_file alive for the lifetime of the process
@@ -49,11 +50,7 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            let log_level = if cfg!(debug_assertions) {
-                log::LevelFilter::Info
-            } else {
-                log::LevelFilter::Warn
-            };
+            let log_level = log::LevelFilter::Info;
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log_level)
@@ -62,7 +59,7 @@ pub fn run() {
 
             // ── Tray Menu ──────────────────────────────────────────
             let handle = app.handle().clone();
-            let show = MenuItemBuilder::with_id("show", "Backsnap öffnen").build(&handle)?;
+            let show = MenuItemBuilder::with_id("show", "Arclight öffnen").build(&handle)?;
             let widget = MenuItemBuilder::with_id("widget", "Widget ein/aus").build(&handle)?;
             let quit = MenuItemBuilder::with_id("quit", "Beenden").build(&handle)?;
             let menu = MenuBuilder::new(&handle)
@@ -87,6 +84,8 @@ pub fn run() {
                         widget::toggle_widget(app_handle);
                     }
                     "quit" => {
+                        // Kill any Jarvis TTS/music processes before exit
+                        cleanup_jarvis_processes();
                         app_handle.exit(0);
                     }
                     _ => {}
@@ -106,6 +105,76 @@ pub fn run() {
                     }
                 });
             }
+
+            // ── Core background bootstrap ────────────────────────────
+            let app_handle = app.handle().clone();
+            commands::assistant::set_app_handle(app_handle.clone());
+
+            // Wake-word readiness must not wait behind slower service boot.
+            // The listener manages its own background thread and model load.
+            commands::assistant::spawn_clap_listener();
+
+            // Fast-return setup: show UI/tray immediately, do heavy startup in background.
+            std::thread::Builder::new()
+                .name("arclight-core-bootstrap".into())
+                .spawn(move || {
+                    // HTTP API Gateway (for mobile app)
+                    let token = std::env::var("ARCLIGHT_TOKEN").unwrap_or_default();
+                    gateway::spawn_gateway(token);
+
+                    // Background services for Jarvis
+                    // Ensure llama-server is running
+                    let health_ok = reqwest::blocking::Client::builder()
+                        .timeout(std::time::Duration::from_secs(2))
+                        .build()
+                        .ok()
+                        .and_then(|c| c.get("http://localhost:8080/health").send().ok())
+                        .map(|r| r.status().is_success())
+                        .unwrap_or(false);
+                    if !health_ok {
+                        log::info!("[startup] llama-server not running — starting it");
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "start", "llama-server.service"])
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    } else {
+                        log::info!("[startup] llama-server already running");
+                    }
+                    commands::assistant::ensure_orpheus_tts_running();
+
+                    // Ensure whisper-server (whisper.cpp hipBLAS) is running
+                    let whisper_ok = reqwest::blocking::Client::builder()
+                        .timeout(std::time::Duration::from_secs(2))
+                        .build()
+                        .ok()
+                        .and_then(|c| c.get("http://127.0.0.1:8178/").send().ok())
+                        .map(|r| r.status().is_success())
+                        .unwrap_or(false);
+                    if !whisper_ok {
+                        log::info!("[startup] whisper-server not running — starting it");
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "start", "whisper-server.service"])
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    } else {
+                        log::info!("[startup] whisper-server already running");
+                    }
+
+                    // Pre-warm STT worker (connects to whisper-server, near-instant).
+                    if let Err(e) = commands::assistant::warmup_stt_worker() {
+                        log::warn!("[startup] STT worker pre-warm failed: {e}");
+                    }
+
+                    log::info!("[startup] Core background bootstrap complete");
+                })
+                .ok();
+
+            // Device auto-connect is already internally threaded, so just trigger it.
+            commands::corsair::auto_connect_devices();
 
             Ok(())
         })
@@ -171,6 +240,8 @@ pub fn run() {
             get_pi_devices,
             get_pi_status_all,
             get_pi_status,
+            get_pi_tent_history,
+            get_pi_tent_status,
             pi_reboot,
             pi_shutdown,
             pi_run_command,
@@ -182,6 +253,53 @@ pub fn run() {
             backup_boot_entries,
             restore_boot_entries,
             delete_boot_backup,
+            get_corsair_status,
+            corsair_ccxt_connect,
+            corsair_ccxt_disconnect,
+            corsair_ccxt_poll,
+            corsair_set_fan_speed,
+            corsair_set_fan_curve,
+            corsair_apply_fan_curves,
+            corsair_set_rgb,
+            corsair_nexus_connect,
+            corsair_nexus_disconnect,
+            corsair_nexus_status,
+            corsair_nexus_display,
+            corsair_nexus_set_page,
+            corsair_nexus_next_page,
+            corsair_nexus_prev_page,
+            corsair_nexus_set_auto_cycle,
+            corsair_nexus_refresh_sys,
+            corsair_nexus_get_layout,
+            corsair_nexus_set_layout,
+            corsair_nexus_reset_layout,
+            corsair_nexus_get_frame,
+            corsair_save_profile,
+            openrgb_connect,
+            openrgb_disconnect,
+            openrgb_status,
+            openrgb_refresh,
+            openrgb_set_color,
+            openrgb_set_zone_color,
+            openrgb_set_led,
+            openrgb_set_zone_leds,
+            openrgb_set_mode,
+            openrgb_off,
+            openrgb_all_off,
+            lighting_master_power,
+            lighting_master_color,
+            govee_master_brightness,
+            govee_lamp_color,
+            lighting_master_brightness,
+            govee_master_power,
+            rgb_master_power,
+            rgb_master_brightness,
+            assistant_chat,
+            assistant_status,
+            jarvis_listener_enabled,
+            jarvis_set_listener_enabled,
+            jarvis_speak,
+            jarvis_listen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -230,4 +348,23 @@ pub fn run_sysfs_write(json: &str) -> i32 {
 ///   {"op":"chmod",  "path":"...", "mode": 755}
 pub fn run_file_ops(json: &str) -> i32 {
     cli::run_file_ops(json)
+}
+
+/// Kill any Jarvis-related child processes (mpv TTS/music, orpheus).
+fn cleanup_jarvis_processes() {
+    use std::process::{Command, Stdio};
+    for pattern in &[
+        "mpv.*jarvis",
+        "mpv.*entrance",
+        "pw-cat.*record",
+        "openwake_listener",
+        "jarvis_listener",
+    ] {
+        let _ = Command::new("pkill")
+            .args(["-f", pattern])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }

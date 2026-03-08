@@ -4,8 +4,8 @@ use std::path::Path;
 use tauri::command;
 
 use super::helpers::{
-    is_root, read_sys, run_cmd, run_file_ops_batch, run_privileged,
-    CommandResult as CmdResult, FileOp,
+    is_root, read_sys, run_cmd, run_file_ops_batch, run_privileged, CommandResult as CmdResult,
+    FileOp,
 };
 
 // ─── Types ────────────────────────────────────────────────────
@@ -48,11 +48,18 @@ pub enum FanMode {
 
 impl FanMode {
     fn from_pwm_enable(val: u32) -> Self {
-        if val == 1 { Self::Manual } else { Self::Auto }
+        if val == 1 {
+            Self::Manual
+        } else {
+            Self::Auto
+        }
     }
 
     fn pwm_enable_str(self) -> &'static str {
-        match self { Self::Manual => "1", Self::Auto => "2" }
+        match self {
+            Self::Manual => "1",
+            Self::Auto => "2",
+        }
     }
 }
 
@@ -182,21 +189,81 @@ pub struct GpuOcStatus {
 
 #[allow(clippy::too_many_arguments)]
 impl TweakInfo {
-    fn info(id: &str, cat: TweakCategory, name: &str, desc: &str, current: &str, status: &str, active: bool, recommended: &str) -> Self {
+    fn info(
+        id: &str,
+        cat: TweakCategory,
+        name: &str,
+        desc: &str,
+        current: &str,
+        status: &str,
+        active: bool,
+        recommended: &str,
+    ) -> Self {
         Self {
-            id: id.into(), category: cat, name: name.into(), description: desc.into(),
-            current: current.into(), status: status.into(), active, recommended: recommended.into(),
-            options: vec![], control: TweakControl::Info, min: None, max: None,
+            id: id.into(),
+            category: cat,
+            name: name.into(),
+            description: desc.into(),
+            current: current.into(),
+            status: status.into(),
+            active,
+            recommended: recommended.into(),
+            options: vec![],
+            control: TweakControl::Info,
+            min: None,
+            max: None,
         }
     }
-    fn select(id: &str, cat: TweakCategory, name: &str, desc: &str, current: &str, status: &str, active: bool, recommended: &str, options: Vec<String>) -> Self {
-        Self { options, control: TweakControl::Select, ..Self::info(id, cat, name, desc, current, status, active, recommended) }
+    fn select(
+        id: &str,
+        cat: TweakCategory,
+        name: &str,
+        desc: &str,
+        current: &str,
+        status: &str,
+        active: bool,
+        recommended: &str,
+        options: Vec<String>,
+    ) -> Self {
+        Self {
+            options,
+            control: TweakControl::Select,
+            ..Self::info(id, cat, name, desc, current, status, active, recommended)
+        }
     }
-    fn toggle(id: &str, cat: TweakCategory, name: &str, desc: &str, current: &str, status: &str, active: bool, recommended: &str) -> Self {
-        Self { control: TweakControl::Toggle, ..Self::info(id, cat, name, desc, current, status, active, recommended) }
+    fn toggle(
+        id: &str,
+        cat: TweakCategory,
+        name: &str,
+        desc: &str,
+        current: &str,
+        status: &str,
+        active: bool,
+        recommended: &str,
+    ) -> Self {
+        Self {
+            control: TweakControl::Toggle,
+            ..Self::info(id, cat, name, desc, current, status, active, recommended)
+        }
     }
-    fn slider(id: &str, cat: TweakCategory, name: &str, desc: &str, current: &str, status: &str, active: bool, recommended: &str, min: i64, max: i64) -> Self {
-        Self { min: Some(min), max: Some(max), control: TweakControl::Slider, ..Self::info(id, cat, name, desc, current, status, active, recommended) }
+    fn slider(
+        id: &str,
+        cat: TweakCategory,
+        name: &str,
+        desc: &str,
+        current: &str,
+        status: &str,
+        active: bool,
+        recommended: &str,
+        min: i64,
+        max: i64,
+    ) -> Self {
+        Self {
+            min: Some(min),
+            max: Some(max),
+            control: TweakControl::Slider,
+            ..Self::info(id, cat, name, desc, current, status, active, recommended)
+        }
     }
 }
 
@@ -211,7 +278,16 @@ fn service_tweak(id: &str, name: &str, desc: &str, pkg: &str, unit: &str, user: 
     } else {
         ("not_installed", "Nicht installiert")
     };
-    TweakInfo::toggle(id, TweakCategory::Services, name, desc, current, status, active, "active")
+    TweakInfo::toggle(
+        id,
+        TweakCategory::Services,
+        name,
+        desc,
+        current,
+        status,
+        active,
+        "active",
+    )
 }
 
 // ─── GPU OC Profile (persisted to disk) ───────────────────────
@@ -228,8 +304,8 @@ pub struct GpuOcProfile {
     pub fan_pwm: u32,
 }
 
-const OC_PROFILE_PATH: &str = "/etc/backsnap/gpu-oc.json";
-const OC_APPLY_SERVICE: &str = "backsnap-gpu-oc.service";
+const OC_PROFILE_PATH: &str = "/etc/arclight/gpu-oc.json";
+const OC_APPLY_SERVICE: &str = "arclight-gpu-oc.service";
 
 fn load_oc_profile() -> Option<GpuOcProfile> {
     let content = fs::read_to_string(OC_PROFILE_PATH).ok()?;
@@ -255,14 +331,20 @@ fn parse_unit<T: std::str::FromStr + Default>(s: &str) -> T {
 
 fn systemctl_check(unit: &str, check: &str, user: bool) -> bool {
     let mut cmd = std::process::Command::new("systemctl");
-    if user { cmd.arg("--user"); }
+    if user {
+        cmd.arg("--user");
+    }
     cmd.args([check, "--quiet", unit])
         .status()
         .is_ok_and(|s| s.success())
 }
 
-fn systemctl_is_active(unit: &str, user: bool) -> bool { systemctl_check(unit, "is-active", user) }
-fn systemctl_is_enabled(unit: &str, user: bool) -> bool { systemctl_check(unit, "is-enabled", user) }
+fn systemctl_is_active(unit: &str, user: bool) -> bool {
+    systemctl_check(unit, "is-active", user)
+}
+fn systemctl_is_enabled(unit: &str, user: bool) -> bool {
+    systemctl_check(unit, "is-enabled", user)
+}
 
 fn is_package_installed(pkg: &str) -> bool {
     std::process::Command::new("pacman")
@@ -336,7 +418,9 @@ fn find_amd_gpu_card_inner() -> Option<String> {
 }
 
 fn read_gpu_profile() -> (String, Vec<String>) {
-    let Some(card) = find_amd_gpu_card() else { return ("N/A".into(), vec![]) };
+    let Some(card) = find_amd_gpu_card() else {
+        return ("N/A".into(), vec![]);
+    };
     let path = format!("/sys/class/drm/{}/device/pp_power_profile_mode", card);
     let content = read_sys(&path);
     let mut current = String::new();
@@ -363,7 +447,9 @@ fn read_gpu_profile() -> (String, Vec<String>) {
 }
 
 fn read_gpu_power_level() -> String {
-    let Some(card) = find_amd_gpu_card() else { return "N/A".into() };
+    let Some(card) = find_amd_gpu_card() else {
+        return "N/A".into();
+    };
     let path = format!(
         "/sys/class/drm/{}/device/power_dpm_force_performance_level",
         card
@@ -428,15 +514,26 @@ fn collect_io_tweaks(tweaks: &mut Vec<TweakInfo>) {
                 .collect()
         })
         .unwrap_or_default();
-    let first_nvme = nvme_devices.first().cloned().unwrap_or_else(|| "nvme0n1".into());
+    let first_nvme = nvme_devices
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "nvme0n1".into());
     let (io_current, io_options) = read_io_scheduler(&first_nvme);
     let io_optimal = io_current == "none";
     tweaks.push(TweakInfo::select(
-        "io_scheduler", TweakCategory::Io, "I/O Scheduler",
+        "io_scheduler",
+        TweakCategory::Io,
+        "I/O Scheduler",
         "NVMe-SSDs brauchen keinen I/O-Scheduler — 'none' ist optimal.",
         &io_current,
-        &if io_optimal { "Optimal (none)".into() } else { format!("Suboptimal ({})", io_current) },
-        io_optimal, "none", io_options,
+        &if io_optimal {
+            "Optimal (none)".into()
+        } else {
+            format!("Suboptimal ({})", io_current)
+        },
+        io_optimal,
+        "none",
+        io_options,
     ));
 
     // Dirty Writeback
@@ -461,11 +558,22 @@ fn collect_io_tweaks(tweaks: &mut Vec<TweakInfo>) {
     // fstrim.timer
     let fstrim_enabled = systemctl_is_enabled("fstrim.timer", false);
     tweaks.push(TweakInfo::toggle(
-        "fstrim_timer", TweakCategory::Io, "TRIM Timer",
+        "fstrim_timer",
+        TweakCategory::Io,
+        "TRIM Timer",
         "Wöchentlicher SSD-TRIM für konstante Schreibgeschwindigkeit. Ergänzt discard=async.",
-        if fstrim_enabled { "enabled" } else { "disabled" },
-        if fstrim_enabled { "Aktiv ✓" } else { "Inaktiv" },
-        fstrim_enabled, "enabled",
+        if fstrim_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        if fstrim_enabled {
+            "Aktiv ✓"
+        } else {
+            "Inaktiv"
+        },
+        fstrim_enabled,
+        "enabled",
     ));
 }
 
@@ -473,7 +581,11 @@ fn collect_memory_tweaks(tweaks: &mut Vec<TweakInfo>) {
     // Swappiness
     let swappiness: i64 = read_sysctl("vm.swappiness").parse().unwrap_or(60);
     let has_zram = Path::new("/dev/zram0").exists();
-    let swap_optimal = if has_zram { swappiness >= 100 } else { swappiness <= 20 };
+    let swap_optimal = if has_zram {
+        swappiness >= 100
+    } else {
+        swappiness <= 20
+    };
     tweaks.push(TweakInfo::slider(
         "swappiness", TweakCategory::Memory, "Swappiness",
         if has_zram { "Mit ZRAM ist ein hoher Wert (100-200) optimal — ZRAM-Swap ist schneller als RAM-Komprimierung." }
@@ -493,7 +605,10 @@ fn collect_memory_tweaks(tweaks: &mut Vec<TweakInfo>) {
         let line = output.lines().nth(1).unwrap_or_default().to_string();
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 5 {
-            format!("{} Disk, {} komprimiert, Algo: {}", parts[2], parts[4], parts[1])
+            format!(
+                "{} Disk, {} komprimiert, Algo: {}",
+                parts[2], parts[4], parts[1]
+            )
         } else {
             "Aktiv".into()
         }
@@ -501,8 +616,14 @@ fn collect_memory_tweaks(tweaks: &mut Vec<TweakInfo>) {
         "Nicht aktiv".into()
     };
     tweaks.push(TweakInfo::info(
-        "zram", TweakCategory::Memory, "ZRAM Swap", "Komprimierter RAM-Swap — viel schneller als Disk-Swap.",
-        if zram_active { "active" } else { "inactive" }, &zram_info, zram_active, "active",
+        "zram",
+        TweakCategory::Memory,
+        "ZRAM Swap",
+        "Komprimierter RAM-Swap — viel schneller als Disk-Swap.",
+        if zram_active { "active" } else { "inactive" },
+        &zram_info,
+        zram_active,
+        "active",
     ));
 
     // Transparent Hugepages
@@ -533,11 +654,19 @@ fn collect_network_tweaks(tweaks: &mut Vec<TweakInfo>) {
         .collect();
     let bbr_active = tcp_cc == "bbr";
     tweaks.push(TweakInfo::select(
-        "tcp_bbr", TweakCategory::Network, "TCP BBR",
+        "tcp_bbr",
+        TweakCategory::Network,
+        "TCP BBR",
         "Googles Congestion Control — besserer Durchsatz und geringere Latenz als Cubic.",
         &tcp_cc,
-        &if bbr_active { "BBR aktiv ✓".into() } else { format!("Aktuell: {}", tcp_cc) },
-        bbr_active, "bbr", tcp_available,
+        &if bbr_active {
+            "BBR aktiv ✓".into()
+        } else {
+            format!("Aktuell: {}", tcp_cc)
+        },
+        bbr_active,
+        "bbr",
+        tcp_available,
     ));
 }
 
@@ -545,9 +674,15 @@ fn collect_gpu_tweaks(tweaks: &mut Vec<TweakInfo>) {
     let (gpu_profile, gpu_profile_opts) = read_gpu_profile();
     if !gpu_profile_opts.is_empty() {
         tweaks.push(TweakInfo::select(
-            "gpu_profile", TweakCategory::GPU, "GPU Power-Profil",
+            "gpu_profile",
+            TweakCategory::GPU,
+            "GPU Power-Profil",
             "AMD GPU-Profil: 3D_FULL_SCREEN für Gaming, COMPUTE für LLM/KI, POWER_SAVING für Idle.",
-            &gpu_profile, &format!("Profil: {}", gpu_profile), true, "3D_FULL_SCREEN", gpu_profile_opts,
+            &gpu_profile,
+            &format!("Profil: {}", gpu_profile),
+            true,
+            "3D_FULL_SCREEN",
+            gpu_profile_opts,
         ));
 
         let gpu_power = read_gpu_power_level();
@@ -564,7 +699,11 @@ fn collect_gpu_tweaks(tweaks: &mut Vec<TweakInfo>) {
     let env_content = fs::read_to_string("/etc/environment").unwrap_or_default();
     let radv_current = env_content
         .lines()
-        .find(|l| l.starts_with("RADV_PERFTEST=")).map_or_else(|| "(nicht gesetzt)".into(), |l| l.trim_start_matches("RADV_PERFTEST=").to_string());
+        .find(|l| l.starts_with("RADV_PERFTEST="))
+        .map_or_else(
+            || "(nicht gesetzt)".into(),
+            |l| l.trim_start_matches("RADV_PERFTEST=").to_string(),
+        );
     let has_sam = radv_current.contains("sam");
     let radv_status = if has_sam {
         format!("{} (sam ist redundant ⚠)", radv_current)
@@ -572,15 +711,24 @@ fn collect_gpu_tweaks(tweaks: &mut Vec<TweakInfo>) {
         format!("{} ✓", radv_current)
     };
     tweaks.push(TweakInfo::select(
-        "radv_perftest", TweakCategory::GPU, "RADV_PERFTEST",
+        "radv_perftest",
+        TweakCategory::GPU,
+        "RADV_PERFTEST",
         &format!(
             "Vulkan-Treiber Features. 'gpl' = parallele Pipeline-Kompilierung (weniger Stutter). \
              'sam' ist seit Mesa 22.x Standard und nicht mehr nötig. Aktuell: {}",
             radv_current
         ),
-        &radv_current, &radv_status,
-        !has_sam, "gpl",
-        vec!["gpl".into(), "gpl,sam".into(), "sam".into(), "(leer)".into()],
+        &radv_current,
+        &radv_status,
+        !has_sam,
+        "gpl",
+        vec![
+            "gpl".into(),
+            "gpl,sam".into(),
+            "sam".into(),
+            "(leer)".into(),
+        ],
     ));
 }
 
@@ -613,11 +761,14 @@ fn collect_filesystem_tweaks(tweaks: &mut Vec<TweakInfo>) {
         .unwrap_or("default")
         .to_string();
     tweaks.push(TweakInfo::info(
-        "btrfs", TweakCategory::Filesystem, "Btrfs Mount-Optionen",
+        "btrfs",
+        TweakCategory::Filesystem,
+        "Btrfs Mount-Optionen",
         "Komprimierung und Commit-Intervall für das Root-Dateisystem.",
         &format!("{}, {}", compress, commit),
         &format!("{}, {}", compress, commit),
-        compress.contains("zstd") && commit.contains("120"), "compress=zstd:3, commit=120",
+        compress.contains("zstd") && commit.contains("120"),
+        "compress=zstd:3, commit=120",
     ));
 }
 
@@ -630,7 +781,9 @@ fn collect_system_tweaks(tweaks: &mut Vec<TweakInfo>) {
         .unwrap_or_default();
     let cachyos = kernel.contains("cachyos");
     tweaks.push(TweakInfo::info(
-        "kernel", TweakCategory::System, "Kernel",
+        "kernel",
+        TweakCategory::System,
+        "Kernel",
         if cachyos {
             "CachyOS-Kernel mit BORE Scheduler, PDS und weiteren Performance-Patches."
         } else {
@@ -638,7 +791,8 @@ fn collect_system_tweaks(tweaks: &mut Vec<TweakInfo>) {
         },
         &kernel,
         &format!("{}{}", kernel, if cachyos { " (optimiert ✓)" } else { "" }),
-        cachyos, "cachyos",
+        cachyos,
+        "cachyos",
     ));
 
     // PCIe ASPM
@@ -653,25 +807,32 @@ fn collect_system_tweaks(tweaks: &mut Vec<TweakInfo>) {
         "Standard (ASPM aktiv)"
     };
     tweaks.push(TweakInfo::info(
-        "pcie_aspm", TweakCategory::System, "PCIe ASPM",
+        "pcie_aspm",
+        TweakCategory::System,
+        "PCIe ASPM",
         "pcie_aspm=off deaktiviert Stromsparen für ALLE PCIe-Geräte (WLAN, NVMe etc.). \
          Besser: amdgpu.aspm=0 deaktiviert es nur für die GPU. \
          Änderung erfordert Boot-Entry und Neustart.",
         aspm_status,
-        if has_pcie_aspm_off { "Global deaktiviert ⚠" }
-        else if has_amdgpu_aspm { "GPU-only ✓" }
-        else { "Standard" },
-        !has_pcie_aspm_off, "amdgpu.aspm=0",
+        if has_pcie_aspm_off {
+            "Global deaktiviert ⚠"
+        } else if has_amdgpu_aspm {
+            "GPU-only ✓"
+        } else {
+            "Standard"
+        },
+        !has_pcie_aspm_off,
+        "amdgpu.aspm=0",
     ));
 }
 
-/// Execute a batch of sysfs/procfs writes natively via backsnap --sysfs-write
+/// Execute a batch of sysfs/procfs writes natively via arclight --sysfs-write
 /// JSON: [{"path": "/sys/...", "value": "123"}, ...]
 fn run_sysfs_batch(json: &str) -> CmdResult {
     if is_root() {
-        run_cmd("backsnap", &["--sysfs-write", json])
+        run_cmd("arclight", &["--sysfs-write", json])
     } else {
-        run_cmd("pkexec", &["backsnap", "--sysfs-write", json])
+        run_cmd("pkexec", &["arclight", "--sysfs-write", json])
     }
 }
 
@@ -693,11 +854,21 @@ fn require_ok(res: &CmdResult, context: &str) -> Result<(), String> {
 fn ok_result(msg: impl Into<String>, val: impl Into<String>) -> TuningApplyResult {
     let m = msg.into();
     let v = val.into();
-    TuningApplyResult { success: true, message: m, new_value: v }
+    TuningApplyResult {
+        success: true,
+        message: m,
+        new_value: v,
+    }
 }
 
 /// Toggle a systemd service: install package if needed, enable/disable.
-fn apply_service_toggle(name: &str, pkg: &str, unit: &str, user: bool, value: &str) -> Result<TuningApplyResult, String> {
+fn apply_service_toggle(
+    name: &str,
+    pkg: &str,
+    unit: &str,
+    user: bool,
+    value: &str,
+) -> Result<TuningApplyResult, String> {
     let enable = value == "active" || value == "true";
     let action = if enable { "enable" } else { "disable" };
     if enable && !is_package_installed(pkg) {
@@ -712,7 +883,11 @@ fn apply_service_toggle(name: &str, pkg: &str, unit: &str, user: bool, value: &s
         let res = run_privileged("systemctl", &[action, "--now", unit]);
         require_ok(&res, &format!("{} {}", name, action))?;
     }
-    let (new_val, verb) = if enable { ("active", "aktiviert") } else { ("inactive", "deaktiviert") };
+    let (new_val, verb) = if enable {
+        ("active", "aktiviert")
+    } else {
+        ("inactive", "deaktiviert")
+    };
     Ok(ok_result(format!("{} {}", name, verb), new_val))
 }
 
@@ -735,14 +910,13 @@ fn read_hwmon_temp(hwmon: &str, file: &str) -> f32 {
         / 1000.0
 }
 
-const BACKSNAP_SYSCTL_PATH: &str = "/etc/sysctl.d/99-backsnap.conf";
+const BACKSNAP_SYSCTL_PATH: &str = "/etc/sysctl.d/99-arclight.conf";
 
-/// Persist a sysctl key=value into /etc/sysctl.d/99-backsnap.conf.
+/// Persist a sysctl key=value into /etc/sysctl.d/99-arclight.conf.
 /// Updates the key if it already exists, appends if not.
 fn persist_sysctl(key: &str, value: &str) -> Result<(), String> {
-    let content = fs::read_to_string(BACKSNAP_SYSCTL_PATH).unwrap_or_else(|_| {
-        "# Managed by backsnap — do not edit manually\n".to_string()
-    });
+    let content = fs::read_to_string(BACKSNAP_SYSCTL_PATH)
+        .unwrap_or_else(|_| "# Managed by arclight — do not edit manually\n".to_string());
     let mut found = false;
     let new_content: String = content
         .lines()
@@ -767,7 +941,8 @@ fn persist_sysctl(key: &str, value: &str) -> Result<(), String> {
     } else {
         format!("{}\n{} = {}\n", new_content.trim_end(), key, value)
     };
-    let json = serde_json::json!([{"path": BACKSNAP_SYSCTL_PATH, "value": final_content}]).to_string();
+    let json =
+        serde_json::json!([{"path": BACKSNAP_SYSCTL_PATH, "value": final_content}]).to_string();
     let res = run_sysfs_batch(&json);
     if res.success {
         Ok(())
@@ -781,7 +956,11 @@ pub async fn apply_tuning(tweak_id: String, value: String) -> Result<TuningApply
     match tweak_id.as_str() {
         "io_scheduler" => apply_io_scheduler(&value),
         "swappiness" => apply_sysctl("vm.swappiness", "Swappiness", &value),
-        "tcp_bbr" => apply_sysctl("net.ipv4.tcp_congestion_control", "TCP Congestion Control", &value),
+        "tcp_bbr" => apply_sysctl(
+            "net.ipv4.tcp_congestion_control",
+            "TCP Congestion Control",
+            &value,
+        ),
         "gpu_profile" => apply_gpu_profile(&value),
         "gpu_power_level" => apply_gpu_power_level(&value),
         "thp" => {
@@ -791,8 +970,16 @@ pub async fn apply_tuning(tweak_id: String, value: String) -> Result<TuningApply
         }
         "fstrim_timer" => apply_fstrim_timer(&value),
         "earlyoom" => apply_service_toggle("earlyoom", "earlyoom", "earlyoom", false, &value),
-        "psd" => apply_service_toggle("Profile Sync Daemon", "profile-sync-daemon", "psd.service", true, &value),
-        "ananicy" => apply_service_toggle("ananicy-cpp", "ananicy-cpp", "ananicy-cpp", false, &value),
+        "psd" => apply_service_toggle(
+            "Profile Sync Daemon",
+            "profile-sync-daemon",
+            "psd.service",
+            true,
+            &value,
+        ),
+        "ananicy" => {
+            apply_service_toggle("ananicy-cpp", "ananicy-cpp", "ananicy-cpp", false, &value)
+        }
         "radv_perftest" => apply_radv_perftest(value),
         _ => Err(format!("Unbekannter Tweak: {}", tweak_id)),
     }
@@ -822,7 +1009,10 @@ fn apply_sysctl(key: &str, label: &str, value: &str) -> Result<TuningApplyResult
     let res = run_privileged("sysctl", &["-w", &arg]);
     require_ok(&res, label)?;
     persist_sysctl(key, value)?;
-    Ok(ok_result(format!("{} auf '{}' gesetzt (persistent)", label, value), value))
+    Ok(ok_result(
+        format!("{} auf '{}' gesetzt (persistent)", label, value),
+        value,
+    ))
 }
 
 fn apply_gpu_profile(value: &str) -> Result<TuningApplyResult, String> {
@@ -833,22 +1023,33 @@ fn apply_gpu_profile(value: &str) -> Result<TuningApplyResult, String> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 {
             let name = parts[1].trim_end_matches(':').trim_end_matches('*');
-            if name == value { return Some(parts[0].to_string()); }
+            if name == value {
+                return Some(parts[0].to_string());
+            }
         }
         None
     });
     let idx = found_idx.ok_or_else(|| format!("GPU-Profil '{}' nicht gefunden", value))?;
     let res = write_sys(&path, &idx);
     require_ok(&res, "GPU-Profil")?;
-    Ok(ok_result(format!("GPU-Profil auf '{}' gesetzt", value), value))
+    Ok(ok_result(
+        format!("GPU-Profil auf '{}' gesetzt", value),
+        value,
+    ))
 }
 
 fn apply_gpu_power_level(value: &str) -> Result<TuningApplyResult, String> {
     let card = find_amd_gpu_card().ok_or("Keine AMD GPU gefunden")?;
-    let path = format!("/sys/class/drm/{}/device/power_dpm_force_performance_level", card);
+    let path = format!(
+        "/sys/class/drm/{}/device/power_dpm_force_performance_level",
+        card
+    );
     let res = write_sys(&path, value);
     require_ok(&res, "GPU Power-Level")?;
-    Ok(ok_result(format!("GPU Power-Level auf '{}' gesetzt", value), value))
+    Ok(ok_result(
+        format!("GPU Power-Level auf '{}' gesetzt", value),
+        value,
+    ))
 }
 
 fn apply_fstrim_timer(value: &str) -> Result<TuningApplyResult, String> {
@@ -856,14 +1057,22 @@ fn apply_fstrim_timer(value: &str) -> Result<TuningApplyResult, String> {
     let action = if enable { "enable" } else { "disable" };
     let res = run_privileged("systemctl", &[action, "--now", "fstrim.timer"]);
     require_ok(&res, "fstrim.timer")?;
-    let (msg, val) = if enable { ("fstrim.timer aktiviert", "enabled") } else { ("fstrim.timer deaktiviert", "disabled") };
+    let (msg, val) = if enable {
+        ("fstrim.timer aktiviert", "enabled")
+    } else {
+        ("fstrim.timer deaktiviert", "disabled")
+    };
     Ok(ok_result(msg, val))
 }
 
 fn apply_radv_perftest(value: String) -> Result<TuningApplyResult, String> {
     let env_path = "/etc/environment";
     let content = fs::read_to_string(env_path).unwrap_or_default();
-    let new_val = if value == "(leer)" { String::new() } else { value };
+    let new_val = if value == "(leer)" {
+        String::new()
+    } else {
+        value
+    };
     let new_content: String = if new_val.is_empty() {
         content
             .lines()
@@ -894,9 +1103,17 @@ fn apply_radv_perftest(value: String) -> Result<TuningApplyResult, String> {
         success: true,
         message: format!(
             "RADV_PERFTEST auf '{}' gesetzt (wirkt nach Neustart/Re-Login)",
-            if new_val.is_empty() { "(entfernt)" } else { &new_val }
+            if new_val.is_empty() {
+                "(entfernt)"
+            } else {
+                &new_val
+            }
         ),
-        new_value: if new_val.is_empty() { "(nicht gesetzt)".into() } else { new_val },
+        new_value: if new_val.is_empty() {
+            "(nicht gesetzt)".into()
+        } else {
+            new_val
+        },
     })
 }
 
@@ -1010,83 +1227,94 @@ pub async fn get_gpu_oc_status() -> Result<GpuOcStatus, String> {
             return Ok(GpuOcStatus {
                 gpu_name: "Keine AMD GPU".into(),
                 ..GpuOcStatus::default()
-            })
+            });
         };
 
-    let od_path = format!("/sys/class/drm/{}/device/pp_od_clk_voltage", card);
-    let available = Path::new(&od_path).exists();
+        let od_path = format!("/sys/class/drm/{}/device/pp_od_clk_voltage", card);
+        let available = Path::new(&od_path).exists();
 
-    let hwmon = find_hwmon(&card).unwrap_or_default();
+        let hwmon = find_hwmon(&card).unwrap_or_default();
 
-    // GPU name from lspci
-    let gpu_name = {
-        let out = std::process::Command::new("lspci")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
-        out.lines()
-            .find(|l| l.contains("VGA")).map_or_else(|| "AMD GPU".into(), |l| l.rsplit(':').next().unwrap_or(l).trim().to_string())
-    };
+        // GPU name from lspci
+        let gpu_name = {
+            let out = std::process::Command::new("lspci")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+            out.lines().find(|l| l.contains("VGA")).map_or_else(
+                || "AMD GPU".into(),
+                |l| l.rsplit(':').next().unwrap_or(l).trim().to_string(),
+            )
+        };
 
-    // VRAM
-    let vram_bytes: u64 = read_sys(&format!(
-        "/sys/class/drm/{}/device/mem_info_vram_total",
-        card
-    ))
-    .parse()
-    .unwrap_or_default();
-    let vram_mb = vram_bytes / 1024 / 1024;
-
-    // OD clocks + voltage
-    let (mut clocks, voltage) = parse_od_clk_voltage(&card);
-
-    // Current active clocks
-    clocks.current_sclk_mhz = parse_active_clock(&card, "pp_dpm_sclk");
-    clocks.current_mclk_mhz = parse_active_clock(&card, "pp_dpm_mclk");
-
-    // Power
-    let power = GpuPowerInfo {
-        cap_w: read_hwmon_watts(&hwmon, "power1_cap"),
-        default_w: read_hwmon_watts(&hwmon, "power1_cap_default"),
-        max_w: read_hwmon_watts(&hwmon, "power1_cap_max"),
-        current_w: read_hwmon_watts(&hwmon, "power1_average"),
-    };
-
-    // Temps
-    let temps = GpuTempInfo {
-        edge: read_hwmon_temp(&hwmon, "temp1_input"),
-        junction: read_hwmon_temp(&hwmon, "temp2_input"),
-        mem: read_hwmon_temp(&hwmon, "temp3_input"),
-    };
-
-    // Fan
-    let fan_enable: u32 = read_sys(&format!("{}/pwm1_enable", hwmon))
-        .parse()
-        .unwrap_or(2);
-    let fan = GpuFanInfo {
-        rpm: read_sys(&format!("{}/fan1_input", hwmon)).parse().unwrap_or_default(),
-        max_rpm: read_sys(&format!("{}/fan1_max", hwmon)).parse().unwrap_or(3200),
-        pwm: read_sys(&format!("{}/pwm1", hwmon)).parse().unwrap_or_default(),
-        mode: FanMode::from_pwm_enable(fan_enable),
-    };
-
-    // GPU busy
-    let gpu_busy_percent = read_sys(&format!("/sys/class/drm/{}/device/gpu_busy_percent", card))
+        // VRAM
+        let vram_bytes: u64 = read_sys(&format!(
+            "/sys/class/drm/{}/device/mem_info_vram_total",
+            card
+        ))
         .parse()
         .unwrap_or_default();
+        let vram_mb = vram_bytes / 1024 / 1024;
 
-    Ok(GpuOcStatus {
-        available,
-        gpu_name,
-        vram_mb,
-        clocks,
-        voltage,
-        power,
-        temps,
-        fan,
-        gpu_busy_percent,
+        // OD clocks + voltage
+        let (mut clocks, voltage) = parse_od_clk_voltage(&card);
+
+        // Current active clocks
+        clocks.current_sclk_mhz = parse_active_clock(&card, "pp_dpm_sclk");
+        clocks.current_mclk_mhz = parse_active_clock(&card, "pp_dpm_mclk");
+
+        // Power
+        let power = GpuPowerInfo {
+            cap_w: read_hwmon_watts(&hwmon, "power1_cap"),
+            default_w: read_hwmon_watts(&hwmon, "power1_cap_default"),
+            max_w: read_hwmon_watts(&hwmon, "power1_cap_max"),
+            current_w: read_hwmon_watts(&hwmon, "power1_average"),
+        };
+
+        // Temps
+        let temps = GpuTempInfo {
+            edge: read_hwmon_temp(&hwmon, "temp1_input"),
+            junction: read_hwmon_temp(&hwmon, "temp2_input"),
+            mem: read_hwmon_temp(&hwmon, "temp3_input"),
+        };
+
+        // Fan
+        let fan_enable: u32 = read_sys(&format!("{}/pwm1_enable", hwmon))
+            .parse()
+            .unwrap_or(2);
+        let fan = GpuFanInfo {
+            rpm: read_sys(&format!("{}/fan1_input", hwmon))
+                .parse()
+                .unwrap_or_default(),
+            max_rpm: read_sys(&format!("{}/fan1_max", hwmon))
+                .parse()
+                .unwrap_or(3200),
+            pwm: read_sys(&format!("{}/pwm1", hwmon))
+                .parse()
+                .unwrap_or_default(),
+            mode: FanMode::from_pwm_enable(fan_enable),
+        };
+
+        // GPU busy
+        let gpu_busy_percent =
+            read_sys(&format!("/sys/class/drm/{}/device/gpu_busy_percent", card))
+                .parse()
+                .unwrap_or_default();
+
+        Ok(GpuOcStatus {
+            available,
+            gpu_name,
+            vram_mb,
+            clocks,
+            voltage,
+            power,
+            temps,
+            fan,
+            gpu_busy_percent,
+        })
     })
-    }).await.map_err(|e| format!("spawn_blocking: {}", e))?
+    .await
+    .map_err(|e| format!("spawn_blocking: {}", e))?
 }
 
 #[command(rename_all = "snake_case")]
@@ -1241,7 +1469,9 @@ pub async fn reset_gpu_oc() -> Result<TuningApplyResult, String> {
 fn get_gpu_oc_status_inner(card: &str, hwmon: &str) -> GpuOcStatus {
     let (clocks, voltage) = parse_od_clk_voltage(card);
     let power_cap_w = read_hwmon_watts(hwmon, "power1_cap");
-    let fan_pwm: u32 = read_sys(&format!("{}/pwm1", hwmon)).parse().unwrap_or_default();
+    let fan_pwm: u32 = read_sys(&format!("{}/pwm1", hwmon))
+        .parse()
+        .unwrap_or_default();
     let fan_enable: u32 = read_sys(&format!("{}/pwm1_enable", hwmon))
         .parse()
         .unwrap_or(2);
@@ -1249,8 +1479,15 @@ fn get_gpu_oc_status_inner(card: &str, hwmon: &str) -> GpuOcStatus {
         available: true,
         clocks,
         voltage,
-        power: GpuPowerInfo { cap_w: power_cap_w, ..Default::default() },
-        fan: GpuFanInfo { pwm: fan_pwm, mode: FanMode::from_pwm_enable(fan_enable), ..Default::default() },
+        power: GpuPowerInfo {
+            cap_w: power_cap_w,
+            ..Default::default()
+        },
+        fan: GpuFanInfo {
+            pwm: fan_pwm,
+            mode: FanMode::from_pwm_enable(fan_enable),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -1287,10 +1524,10 @@ pub async fn install_gpu_oc_service() -> Result<TuningApplyResult, String> {
     let script = include_str!("../scripts/apply-gpu-oc.sh.tmpl")
         .replace("@@PROFILE_PATH@@", OC_PROFILE_PATH);
 
-    let script_path = "/etc/backsnap/apply-gpu-oc.sh";
+    let script_path = "/etc/arclight/apply-gpu-oc.sh";
     let service_content = format!(
         "[Unit]
-Description=Apply Backsnap GPU OC settings at boot
+Description=Apply Arclight GPU OC settings at boot
 After=systemd-modules-load.service
 After=dev-dri-card1.device
 Wants=dev-dri-card1.device
@@ -1308,15 +1545,16 @@ WantedBy=graphical.target
 
     // Udev rule: re-apply GPU OC after a GPU reset
     let udev_rule = "ACTION==\"change\", SUBSYSTEM==\"drm\", KERNEL==\"card[0-9]*\", \
-        ENV{RESET}==\"1\", RUN+=\"/bin/bash /etc/backsnap/apply-gpu-oc.sh\"".to_string();
+        ENV{RESET}==\"1\", RUN+=\"/bin/bash /etc/arclight/apply-gpu-oc.sh\""
+        .to_string();
 
     // Single privileged batch: mkdir, write script + chmod, write service + udev
     let script_path_str = script_path.to_string();
     let service_path = format!("/etc/systemd/system/{}", OC_APPLY_SERVICE);
-    let udev_path = "/etc/udev/rules.d/99-backsnap-gpu-reset.rules".to_string();
+    let udev_path = "/etc/udev/rules.d/99-arclight-gpu-reset.rules".to_string();
     let ops = vec![
         FileOp::Mkdir {
-            path: "/etc/backsnap".into(),
+            path: "/etc/arclight".into(),
         },
         FileOp::Write {
             path: script_path_str.clone(),
@@ -1360,10 +1598,10 @@ pub async fn uninstall_gpu_oc_service() -> Result<TuningApplyResult, String> {
     let ops = vec![
         FileOp::Delete { path: service_path },
         FileOp::Delete {
-            path: "/etc/backsnap/apply-gpu-oc.sh".into(),
+            path: "/etc/arclight/apply-gpu-oc.sh".into(),
         },
         FileOp::Delete {
-            path: "/etc/udev/rules.d/99-backsnap-gpu-reset.rules".into(),
+            path: "/etc/udev/rules.d/99-arclight-gpu-reset.rules".into(),
         },
     ];
     let _ = run_file_ops_batch(&ops);

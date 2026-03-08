@@ -68,7 +68,9 @@ pub async fn get_snapshots(config: String) -> Result<Vec<Snapshot>, String> {
             if id == 0 {
                 continue;
             }
-            let Some(snap_type) = SnapType::parse(&get(i_type)) else { continue };
+            let Some(snap_type) = SnapType::parse(&get(i_type)) else {
+                continue;
+            };
             snapshots.push(Snapshot {
                 id,
                 snap_type,

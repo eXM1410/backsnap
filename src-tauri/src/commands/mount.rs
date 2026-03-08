@@ -72,7 +72,7 @@ pub(super) fn ensure_backup_subvolumes(
     mount_opts: &str,
     log_path: &str,
 ) {
-    let tmp = "/tmp/backsnap-ensure-subvol";
+    let tmp = "/tmp/arclight-ensure-subvol";
     let _ = fs::create_dir_all(tmp);
 
     // Mount top-level (subvolid=5) of the backup btrfs

@@ -1,7 +1,7 @@
 //! Btrfs rollback commands: snapshot-based root subvolume rollback with crash-safety.
 //!
 //! Architecture: GUI calls `rollback_snapshot` Tauri command → spawns
-//! `pkexec backsnap --rollback-elevated <snap_id>` → entire rollback runs as root,
+//! `pkexec arclight --rollback-elevated <snap_id>` → entire rollback runs as root,
 //! streaming JSON progress to stdout → GUI relays as Tauri events. One pkexec prompt.
 
 use super::helpers::*;
@@ -9,7 +9,7 @@ use super::mount::AutoUmount;
 use std::fs;
 use std::path::Path;
 
-const ROLLBACK_RECOVER_TMPDIR: &str = "/tmp/backsnap-rollback-recover";
+const ROLLBACK_RECOVER_TMPDIR: &str = "/tmp/arclight-rollback-recover";
 
 // ─── Tauri command: spawn elevated subprocess + relay progress ───
 
@@ -34,7 +34,7 @@ pub async fn rollback_snapshot(
         .map_err(|e| format!("Spawn error: {}", e))?
 }
 
-/// Spawn `pkexec backsnap --rollback-elevated <snap_id>` and relay JSON progress.
+/// Spawn `pkexec arclight --rollback-elevated <snap_id>` and relay JSON progress.
 fn run_rollback_elevated(app: &tauri::AppHandle, snap_id: u32) -> Result<CommandResult, String> {
     let id = snap_id.to_string();
     relay_elevated_subprocess(app, &["--rollback-elevated", &id])
@@ -42,11 +42,11 @@ fn run_rollback_elevated(app: &tauri::AppHandle, snap_id: u32) -> Result<Command
 
 // ─── Elevated CLI: runs as root, streams JSON progress to stdout ───
 
-/// CLI entry point for `pkexec backsnap --rollback-elevated <snap_id>`.
+/// CLI entry point for `pkexec arclight --rollback-elevated <snap_id>`.
 #[allow(clippy::print_stderr, clippy::needless_pass_by_value)]
 pub fn run_rollback_elevated_cli(snap_id: u32, config_path_override: Option<String>) -> i32 {
     if let Err(e) = preload_cli_config(config_path_override.as_deref()) {
-        eprintln!("backsnap: {}", e);
+        eprintln!("arclight: {}", e);
         return 1;
     }
     emit_cli_result(do_rollback_root(snap_id), "ROLLBACK FEHLER")
@@ -54,21 +54,25 @@ pub fn run_rollback_elevated_cli(snap_id: u32, config_path_override: Option<Stri
 
 // ─── Recovery Wizard (CLI) ───────────────────────────────────
 
-/// CLI entry point for `backsnap --rollback-recover`.
+/// CLI entry point for `arclight --rollback-recover`.
 ///
 /// This is meant to be used from a rescue shell (already root). It guides the user
 /// through restoring the previously backed-up root subvolume (e.g. `@.broken-*`) back
 /// to the active root subvolume name (e.g. `@`).
-#[allow(clippy::print_stdout, clippy::print_stderr, clippy::needless_pass_by_value)]
+#[allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::needless_pass_by_value
+)]
 pub fn run_rollback_recover_cli(config_path_override: Option<String>) -> i32 {
     if let Err(e) = preload_cli_config(config_path_override.as_deref()) {
-        eprintln!("backsnap: {}", e);
+        eprintln!("arclight: {}", e);
         return 1;
     }
 
     if !is_root() {
-        eprintln!("backsnap: Rollback-Recovery benötigt root (im Rescue-Modus bist du i.d.R. schon root).\n\
-Bitte starte: sudo backsnap --rollback-recover");
+        eprintln!("arclight: Rollback-Recovery benötigt root (im Rescue-Modus bist du i.d.R. schon root).\n\
+Bitte starte: sudo arclight --rollback-recover");
         return 1;
     }
 
@@ -78,7 +82,7 @@ Bitte starte: sudo backsnap --rollback-recover");
             0
         }
         Err(e) => {
-            eprintln!("backsnap: {}", e);
+            eprintln!("arclight: {}", e);
             1
         }
     }
@@ -148,7 +152,7 @@ Wenn du manuell zurück willst, prüfe: ls {}",
     broken.sort();
     broken.reverse();
 
-    println!("backsnap Rollback-Recovery Wizard\n");
+    println!("arclight Rollback-Recovery Wizard\n");
     println!("Aktives Root: {}", root_subvol);
     println!("Gefundene Backups:");
     for (i, name) in broken.iter().enumerate() {
@@ -196,7 +200,6 @@ Wenn du manuell zurück willst, prüfe: ls {}",
 
     Ok("Recovery abgeschlossen.".to_string())
 }
-
 
 /// Full rollback running as root — all fs ops are native Rust, no pkexec needed.
 fn do_rollback_root(snap_id: u32) -> Result<CommandResult, String> {

@@ -147,7 +147,7 @@ export default function Schedule() {
             </div>
             <div>
               <h3 className="font-semibold text-lg flex items-center gap-2">
-                {appConfig?.sync.timer_unit || "backsnap-sync.timer"}
+                {appConfig?.sync.timer_unit || "arclight-sync.timer"}
                 <Badge color={config?.enabled ? "green" : timerInstalled ? "yellow" : "red"}>
                   {config?.enabled
                     ? "Aktiv"
@@ -225,7 +225,7 @@ export default function Schedule() {
           </div>
           <p className="text-xs text-zinc-600 mt-3">
             Erstellt systemd Service + Timer unter /etc/systemd/system/.
-            Führt <code className="text-cyan-500">backsnap --sync</code> als Root aus.
+            Führt <code className="text-cyan-500">arclight --sync</code> als Root aus.
           </p>
         </Card>
 
@@ -301,7 +301,7 @@ export default function Schedule() {
         <ul className="space-y-2 text-sm text-zinc-500">
           <li className="flex items-start gap-2">
             <span className="text-cyan-400 mt-0.5">•</span>
-            Der Timer erstellt einen systemd Service der <code className="text-cyan-500">backsnap --sync</code> als Root ausführt
+            Der Timer erstellt einen systemd Service der <code className="text-cyan-500">arclight --sync</code> als Root ausführt
           </li>
           <li className="flex items-start gap-2">
             <span className="text-cyan-400 mt-0.5">•</span>
@@ -313,7 +313,7 @@ export default function Schedule() {
           </li>
           <li className="flex items-start gap-2">
             <span className="text-cyan-400 mt-0.5">•</span>
-            CLI-Modus: <code className="text-cyan-500">backsnap --sync [--config pfad]</code>
+            CLI-Modus: <code className="text-cyan-500">arclight --sync [--config pfad]</code>
           </li>
           <li className="flex items-start gap-2">
             <span className="text-cyan-400 mt-0.5">•</span>

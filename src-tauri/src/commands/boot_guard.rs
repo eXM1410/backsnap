@@ -6,11 +6,11 @@
 //! 3. One-click restore of boot entries from backup
 //! 4. Diff view of what changed
 
-use std::collections::HashSet;
-use crate::config::config_dir;
 use super::fstab::write_privileged;
-use super::helpers::{run_privileged, list_conf_files};
+use super::helpers::{list_conf_files, run_privileged};
+use crate::config::config_dir;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// Overall boot health status.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,7 +98,6 @@ const TRACKED_PARAMS: &[&str] = &[
     "pcie_aspm=",
     "nowatchdog",
     "quiet",
-    "splash",
 ];
 
 // ─── Helper: backup directory ─────────────────────────────────
@@ -118,7 +117,9 @@ fn read_entries(dir: &Path) -> Vec<(String, String)> {
     if let Ok(rd) = fs::read_dir(dir) {
         for e in rd.flatten() {
             let path = e.path();
-            let is_conf = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("conf"));
+            let is_conf = path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("conf"));
             let name = e.file_name().to_string_lossy().into_owned();
             if is_conf && !name.contains(".bak") {
                 if let Ok(content) = fs::read_to_string(e.path()) {
@@ -176,7 +177,11 @@ fn check_boot_mounted() -> (bool, Option<String>) {
                 let r = run_privileged("lsblk", &["-no", "LABEL", &dev]);
                 let label = if r.success {
                     let l = r.stdout.trim().to_string();
-                    if l.is_empty() { None } else { Some(l) }
+                    if l.is_empty() {
+                        None
+                    } else {
+                        Some(l)
+                    }
                 } else {
                     None
                 };
@@ -225,13 +230,15 @@ fn get_backups() -> Vec<BackupInfo> {
                 if let Ok(ts) = ts_str.parse::<u64>() {
                     // Count .conf files
                     let count = fs::read_dir(e.path())
-                        .map(|rd| rd.flatten().filter(|f| {
-                            f.file_name().to_string_lossy().ends_with(".conf")
-                        }).count())
+                        .map(|rd| {
+                            rd.flatten()
+                                .filter(|f| f.file_name().to_string_lossy().ends_with(".conf"))
+                                .count()
+                        })
                         .unwrap_or_default();
                     // Read label if exists
-                    let label = fs::read_to_string(e.path().join("label.txt"))
-                        .unwrap_or_else(|_| {
+                    let label =
+                        fs::read_to_string(e.path().join("label.txt")).unwrap_or_else(|_| {
                             // Format timestamp as human-readable
                             let dt = chrono_format(ts);
                             format!("Backup {}", dt)
@@ -253,7 +260,10 @@ fn chrono_format(epoch: u64) -> String {
     use chrono::DateTime;
     // CAST-SAFETY: epoch seconds always fit i64 (up to year 292 billion)
     #[allow(clippy::cast_possible_wrap)]
-    DateTime::from_timestamp(epoch as i64, 0).map_or_else(|| format!("{}", epoch), |dt| dt.format("%d.%m.%Y %H:%M").to_string())
+    DateTime::from_timestamp(epoch as i64, 0).map_or_else(
+        || format!("{}", epoch),
+        |dt| dt.format("%d.%m.%Y %H:%M").to_string(),
+    )
 }
 
 fn latest_backup_entries() -> HashMap<String, String> {
@@ -300,10 +310,10 @@ fn check_entry_health(
     // Check kernel/initramfs existence
     let kernel_path = format!("/boot{linux}");
     let initrd_path = format!("/boot{initrd}");
-    let kernel_exists = Path::new(&kernel_path).exists()
-        || run_privileged("test", &["-f", &kernel_path]).success;
-    let initramfs_exists = Path::new(&initrd_path).exists()
-        || run_privileged("test", &["-f", &initrd_path]).success;
+    let kernel_exists =
+        Path::new(&kernel_path).exists() || run_privileged("test", &["-f", &kernel_path]).success;
+    let initramfs_exists =
+        Path::new(&initrd_path).exists() || run_privileged("test", &["-f", &initrd_path]).success;
 
     if !kernel_exists {
         issues.push(format!("{name}: Kernel {linux} fehlt auf /boot"));
@@ -317,7 +327,9 @@ fn check_entry_health(
     if let Some(backup_content) = backup_entries.get(name) {
         let backup_options = parse_entry_field(backup_content, "options ");
         for param in TRACKED_PARAMS {
-            let was_in_backup = backup_options.split_whitespace().any(|p| p.starts_with(param));
+            let was_in_backup = backup_options
+                .split_whitespace()
+                .any(|p| p.starts_with(param));
             let is_in_current = options.split_whitespace().any(|p| p.starts_with(param));
             if was_in_backup && !is_in_current {
                 let full_param = backup_options
@@ -448,14 +460,11 @@ pub async fn backup_boot_entries(label: Option<String>) -> Result<BackupInfo, St
         fs::create_dir_all(&dir).map_err(|e| format!("Backup-Verzeichnis: {}", e))?;
 
         for (name, content) in &entries {
-            fs::write(dir.join(name), content)
-                .map_err(|e| format!("Schreibe {}: {}", name, e))?;
+            fs::write(dir.join(name), content).map_err(|e| format!("Schreibe {}: {}", name, e))?;
         }
 
         // Write label
-        let label_text = label.unwrap_or_else(|| {
-            format!("Manuelles Backup {}", chrono_format(ts))
-        });
+        let label_text = label.unwrap_or_else(|| format!("Manuelles Backup {}", chrono_format(ts)));
         let _ = fs::write(dir.join("label.txt"), &label_text);
 
         // Also save running kernel version for reference

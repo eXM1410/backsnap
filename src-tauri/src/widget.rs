@@ -9,7 +9,7 @@ use tauri::Manager;
 pub(crate) fn widget_pos_path() -> PathBuf {
     let dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("com.backsnap.app");
+        .join("com.arclight.app");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("widget-position.json")
 }
@@ -21,17 +21,25 @@ pub(crate) fn save_widget_pos(_w: &tauri::WebviewWindow) {
 var clients = workspace.windowList();
 for (var i = 0; i < clients.length; i++) {
   var c = clients[i];
-  if (c.caption === "Backsnap Widget") {
+  if (c.caption === "Arclight Widget") {
     console.log("WIDGET_POS:" + c.frameGeometry.x + "," + c.frameGeometry.y + "," + c.frameGeometry.width + "," + c.frameGeometry.height);
   }
 }
 "#;
-    let tmp = "/tmp/backsnap_widget_pos.js";
-    if std::fs::write(tmp, script).is_err() { return; }
+    let tmp = "/tmp/arclight_widget_pos.js";
+    if std::fs::write(tmp, script).is_err() {
+        return;
+    }
 
     // Load and run the script
     let load_out = std::process::Command::new("qdbus")
-        .args(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", tmp, ""])
+        .args([
+            "org.kde.KWin",
+            "/Scripting",
+            "org.kde.kwin.Scripting.loadScript",
+            tmp,
+            "",
+        ])
         .output();
     let script_id = match load_out {
         Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
@@ -45,19 +53,37 @@ for (var i = 0; i < clients.length; i++) {
     // Give KWin a moment, then read from journal
     std::thread::sleep(std::time::Duration::from_millis(200));
     if let Ok(journal) = std::process::Command::new("journalctl")
-        .args(["--user", "-u", "plasma-kwin_wayland", "-n", "20", "--no-pager", "-o", "cat"])
+        .args([
+            "--user",
+            "-u",
+            "plasma-kwin_wayland",
+            "-n",
+            "20",
+            "--no-pager",
+            "-o",
+            "cat",
+        ])
         .output()
     {
         let out = String::from_utf8_lossy(&journal.stdout);
         for line in out.lines().rev() {
-            if let Some(data) = line.strip_prefix("Backsnap Widget: x=") {
+            if let Some(data) = line.strip_prefix("Arclight Widget: x=") {
                 // Parse "x=852 y=0 w=228 h=506"
                 let parts: Vec<&str> = data.split_whitespace().collect();
                 if parts.len() == 4 {
                     let x = parts[0].parse::<f64>().unwrap_or(0.0);
-                    let y = parts[1].strip_prefix("y=").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                    let w = parts[2].strip_prefix("w=").and_then(|v| v.parse::<f64>().ok()).unwrap_or(320.0);
-                    let h = parts[3].strip_prefix("h=").and_then(|v| v.parse::<f64>().ok()).unwrap_or(420.0);
+                    let y = parts[1]
+                        .strip_prefix("y=")
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let w = parts[2]
+                        .strip_prefix("w=")
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(320.0);
+                    let h = parts[3]
+                        .strip_prefix("h=")
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(420.0);
                     let json = format!(r#"{{"x":{},"y":{},"width":{},"height":{}}}"#, x, y, w, h);
                     let _ = std::fs::write(widget_pos_path(), &json);
                     log::info!("Widget position saved (KWin): {}", json);
@@ -111,7 +137,7 @@ pub(crate) fn toggle_widget(app_handle: &tauri::AppHandle) {
             "widget",
             tauri::WebviewUrl::App("/widget".into()),
         )
-        .title("Backsnap Widget")
+        .title("Arclight Widget")
         .resizable(true)
         .decorations(false)
         .transparent(true)
@@ -150,21 +176,37 @@ fn move_widget_kwin(x: f64, y: f64, w: f64, h: f64) {
             r#"var clients = workspace.windowList();
 for (var i = 0; i < clients.length; i++) {{
   var c = clients[i];
-  if (c.caption === "Backsnap Widget") {{
+  if (c.caption === "Arclight Widget") {{
     c.frameGeometry = {{x: {x}, y: {y}, width: {w}, height: {h}}};
     console.log("Widget moved to {x},{y}");
   }}
 }}"#,
-            x = x as i64, y = y as i64, w = w as i64, h = h as i64,
+            x = x as i64,
+            y = y as i64,
+            w = w as i64,
+            h = h as i64,
         );
-        let tmp = "/tmp/backsnap_move_widget.js";
-        if std::fs::write(tmp, &script).is_err() { return; }
+        let tmp = "/tmp/arclight_move_widget.js";
+        if std::fs::write(tmp, &script).is_err() {
+            return;
+        }
         // Unload any previously loaded version
         let _ = std::process::Command::new("qdbus")
-            .args(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", tmp])
+            .args([
+                "org.kde.KWin",
+                "/Scripting",
+                "org.kde.kwin.Scripting.unloadScript",
+                tmp,
+            ])
             .output();
         let load_out = std::process::Command::new("qdbus")
-            .args(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", tmp, ""])
+            .args([
+                "org.kde.KWin",
+                "/Scripting",
+                "org.kde.kwin.Scripting.loadScript",
+                tmp,
+                "",
+            ])
             .output();
         if let Ok(o) = load_out {
             let id = String::from_utf8_lossy(&o.stdout).trim().to_string();

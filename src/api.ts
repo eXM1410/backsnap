@@ -385,6 +385,7 @@ export interface GpuMonInfo {
   vram_total_mib: number | null;
   vram_used_mib: number | null;
   gpu_busy_percent: number | null;
+  gpu_clock_mhz: number | null;
 }
 
 export interface LoadAvgInfo {
@@ -473,6 +474,45 @@ export interface PiActionResult {
   message: string;
 }
 
+export interface PiTentSensor {
+  temp: number;
+  humi: number;
+  vpd: number;
+  batt: number;
+}
+
+export interface PiTentLight {
+  power: boolean;
+  brightness: number;
+}
+
+export interface PiTentTank {
+  percent: number;
+  liters: number;
+}
+
+export interface PiTentStatus {
+  ok: boolean;
+  base_url: string;
+  sensor: PiTentSensor | null;
+  light: PiTentLight | null;
+  tank: PiTentTank | null;
+  temp_history: number[];
+  humi_history: number[];
+  vpd_history: number[];
+  brightness_history: number[];
+  error: string | null;
+}
+
+export interface PiTentHistory {
+  ok: boolean;
+  temp_history: number[];
+  humi_history: number[];
+  vpd_history: number[];
+  brightness_history: number[];
+  error: string | null;
+}
+
 // ─── Boot Guard ───────────────────────────────────────────────
 
 export interface EntryHealth {
@@ -509,6 +549,152 @@ export interface RestoreResult {
   success: boolean;
   restored: string[];
   errors: string[];
+}
+
+// ─── Corsair Types ────────────────────────────────────────────
+
+export interface CorsairDeviceInfo {
+  productId: number;
+  serial: string;
+  product: string;
+  path: string;
+}
+
+export interface FanChannel {
+  channel: number;
+  connected: boolean;
+  rpm: number;
+  duty: number; // SpeedPct newtype serialises as u8
+}
+
+export interface TempProbe {
+  channel: number;
+  connected: boolean;
+  temp: number; // Celsius newtype serialises as f32
+}
+
+export interface FanCurvePoint {
+  temp: number;
+  speed: number;
+}
+
+export type FanMode =
+  | { type: "fixed"; speed: number }
+  | { type: "curve"; points: FanCurvePoint[] };
+
+export interface CcxtStatus {
+  firmware: string;
+  serial: string;
+  product: string;
+  fans: FanChannel[];
+  temps: TempProbe[];
+  fanModes: FanMode[];
+  connected: boolean;
+}
+
+export interface NexusButton {
+  index: number;
+  posMin: number;
+  posMax: number;
+  label: string;
+}
+
+export interface NexusStatus {
+  firmware: string;
+  serial: string;
+  product: string;
+  connected: boolean;
+  lcdWidth: number;
+  lcdHeight: number;
+  buttons: NexusButton[];
+  lastButton: number | null;
+  currentPage: number;
+  pageCount: number;
+  autoCycle: boolean;
+}
+
+export interface CorsairStatus {
+  devices: CorsairDeviceInfo[];
+  ccxt: CcxtStatus | null;
+  nexus: NexusStatus | null;
+}
+
+export type NexusDisplayRequest =
+  | { type: "clear" }
+  | { type: "text"; label: string; value: string };
+
+// ─── NEXUS Widget Layout Types ────────────────────────────────
+
+export type WidgetColor = "white" | "cyan" | "amber" | "red" | "purple" | "dim";
+
+export type DataSource =
+  | "waterTemp" | "cpuTemp" | "gpuTemp" | "totalPower"
+  | "cpuUsage" | "ramUsage" | "cpuFreq" | "ramTotal";
+
+export type WidgetKind =
+  | { type: "fanIcon"; channel: number; color: WidgetColor; scale: number }
+  | { type: "sensor"; source: DataSource; label: string; scale: number; color: WidgetColor }
+  | { type: "statusBar"; source: DataSource; label: string; color: WidgetColor; scale: number }
+  | { type: "label"; text: string; scale: number; color: WidgetColor }
+  | { type: "clock"; color: WidgetColor; scale: number }
+  | { type: "divider"; color: WidgetColor }
+  | { type: "pageDots"; color: WidgetColor };
+
+export interface NexusWidget {
+  id: string;
+  kind: WidgetKind;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface PageLayout {
+  name: string;
+  widgets: NexusWidget[];
+}
+
+export interface NexusLayout {
+  pages: PageLayout[];
+}
+
+// ─── RGB Types (direct HID control) ───────────────────────────
+
+export interface MasterLightResult {
+  power: boolean;
+  corsairOk: boolean;
+  corsairMsg: string;
+  openrgbOk: boolean;
+  openrgbMsg: string;
+  goveeOk: boolean;
+  goveeMsg: string;
+}
+
+export interface RgbColor {
+  r: number;
+  g: number;
+  b: number;
+}
+
+export interface RgbZoneInfo {
+  name: string;
+  leds_count: number;
+  is_digital: boolean;
+}
+
+export interface RgbDeviceInfo {
+  id: string;
+  name: string;
+  device_type: string;
+  vendor: string;
+  connected: boolean;
+  zones: RgbZoneInfo[];
+  effects: string[];
+}
+
+export interface RgbStatus {
+  connected: boolean;
+  devices: RgbDeviceInfo[];
 }
 
 // ─── API Calls ────────────────────────────────────────────────
@@ -586,6 +772,8 @@ export const api = {
   getPiDevices: () => invoke<PiDevice[]>("get_pi_devices"),
   getPiStatusAll: () => invoke<PiStatus[]>("get_pi_status_all"),
   getPiStatus: (id: string) => invoke<PiStatus>("get_pi_status", { id }),
+  getPiTentStatus: () => invoke<PiTentStatus>("get_pi_tent_status"),
+  getPiTentHistory: () => invoke<PiTentHistory>("get_pi_tent_history"),
   piReboot: (id: string) => invoke<PiActionResult>("pi_reboot", { id }),
   piShutdown: (id: string) => invoke<PiActionResult>("pi_shutdown", { id }),
   piRunCommand: (id: string, command: string) =>
@@ -607,4 +795,121 @@ export const api = {
     invoke<RestoreResult>("restore_boot_entries", { timestamp }),
   deleteBootBackup: (timestamp: number) =>
     invoke<string>("delete_boot_backup", { timestamp }),
+
+  // Corsair
+  getCorsairStatus: () => invoke<CorsairStatus>("get_corsair_status"),
+  corsairCcxtConnect: (serial: string) =>
+    invoke<string>("corsair_ccxt_connect", { serial }),
+  corsairCcxtDisconnect: () => invoke<string>("corsair_ccxt_disconnect"),
+  corsairCcxtPoll: () => invoke<CcxtStatus>("corsair_ccxt_poll"),
+  corsairSetFanSpeed: (channel: number, speed: number | null) =>
+    invoke<string>("corsair_set_fan_speed", {
+      request: { channel, speed },
+    }),
+  corsairSetFanCurve: (channel: number, points: FanCurvePoint[]) =>
+    invoke<string>("corsair_set_fan_curve", {
+      request: { channel, points },
+    }),
+  corsairApplyFanCurves: () => invoke<string>("corsair_apply_fan_curves"),
+  corsairSetRgb: (r: number, g: number, b: number) =>
+    invoke<string>("corsair_set_rgb", { request: { r, g, b } }),
+  corsairNexusConnect: (serial: string) =>
+    invoke<string>("corsair_nexus_connect", { serial }),
+  corsairNexusDisconnect: () => invoke<string>("corsair_nexus_disconnect"),
+  corsairNexusStatus: () => invoke<NexusStatus>("corsair_nexus_status"),
+  corsairNexusDisplay: (content: NexusDisplayRequest) =>
+    invoke<string>("corsair_nexus_display", { content }),
+  corsairNexusSetPage: (page: number) =>
+    invoke<string>("corsair_nexus_set_page", { page }),
+  corsairNexusNextPage: () => invoke<string>("corsair_nexus_next_page"),
+  corsairNexusPrevPage: () => invoke<string>("corsair_nexus_prev_page"),
+  corsairNexusSetAutoCycle: (enabled: boolean) =>
+    invoke<string>("corsair_nexus_set_auto_cycle", { enabled }),
+  corsairNexusGetLayout: () =>
+    invoke<NexusLayout>("corsair_nexus_get_layout"),
+  corsairNexusSetLayout: (layout: NexusLayout) =>
+    invoke<string>("corsair_nexus_set_layout", { layout }),
+  corsairNexusResetLayout: () =>
+    invoke<NexusLayout>("corsair_nexus_reset_layout"),
+  corsairNexusGetFrame: () =>
+    invoke<string>("corsair_nexus_get_frame"),
+  corsairSaveProfile: () => invoke<string>("corsair_save_profile"),
+
+  // ── RGB (direct HID) ──────────────────────────────────────
+
+  openrgbConnect: () => invoke<RgbStatus>("openrgb_connect"),
+  openrgbDisconnect: () => invoke<string>("openrgb_disconnect"),
+  openrgbStatus: () => invoke<RgbStatus>("openrgb_status"),
+  openrgbRefresh: () => invoke<RgbStatus>("openrgb_refresh"),
+  openrgbSetColor: (deviceId: string, r: number, g: number, b: number) =>
+    invoke<string>("openrgb_set_color", { deviceId, r, g, b }),
+  openrgbSetZoneColor: (
+    deviceId: string,
+    zoneId: number,
+    r: number,
+    g: number,
+    b: number
+  ) => invoke<string>("openrgb_set_zone_color", { deviceId, zoneId, r, g, b }),
+  openrgbSetLed: (
+    deviceId: string,
+    ledId: number,
+    r: number,
+    g: number,
+    b: number
+  ) => invoke<string>("openrgb_set_led", { deviceId, ledId, r, g, b }),
+  openrgbSetZoneLeds: (
+    deviceId: string,
+    zoneId: number,
+    colors: RgbColor[]
+  ) => invoke<string>("openrgb_set_zone_leds", { deviceId, zoneId, colors }),
+  openrgbSetMode: (
+    deviceId: string,
+    modeId: number,
+    speed?: number,
+    brightness?: number,
+    direction?: number,
+    colors?: RgbColor[]
+  ) =>
+    invoke<string>("openrgb_set_mode", {
+      deviceId,
+      modeId,
+      speed: speed ?? null,
+      brightness: brightness ?? null,
+      direction: direction ?? null,
+      colors: colors ?? null,
+    }),
+  openrgbOff: (deviceId: string) =>
+    invoke<string>("openrgb_off", { deviceId }),
+  openrgbAllOff: () => invoke<string>("openrgb_all_off"),
+
+  // ── Master Lighting ──
+  lightingMasterPower: (power: boolean) =>
+    invoke<MasterLightResult>("lighting_master_power", { power }),
+  goveeMasterBrightness: (brightness: number) =>
+    invoke<[boolean, string]>("govee_master_brightness", { brightness }),
+  lightingMasterBrightness: (brightness: number) =>
+    invoke<MasterLightResult>("lighting_master_brightness", { brightness }),
+  goveeMasterPower: (power: boolean) =>
+    invoke<[boolean, string]>("govee_master_power", { power }),
+  rgbMasterPower: (power: boolean) =>
+    invoke<[boolean, string]>("rgb_master_power", { power }),
+  rgbMasterBrightness: (brightness: number) =>
+    invoke<[boolean, string]>("rgb_master_brightness", { brightness }),
+
+  // ── Assistant ──
+  assistantChat: (history: { role: string; content: string }[]) =>
+    invoke<{ text: string; actions: { action: string; success: boolean; message: string }[] }>(
+      "assistant_chat",
+      { history }
+    ),
+  assistantStatus: () =>
+    invoke<[boolean, string]>("assistant_status"),
+  jarvisListenerEnabled: () =>
+    invoke<boolean>("jarvis_listener_enabled"),
+  jarvisSetListenerEnabled: (enabled: boolean) =>
+    invoke<boolean>("jarvis_set_listener_enabled", { enabled }),
+  jarvisSpeak: (text: string) =>
+    invoke<string>("jarvis_speak", { text }),
+  jarvisListen: () =>
+    invoke<string>("jarvis_listen"),
 };

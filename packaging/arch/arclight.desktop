@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Arclight
+Comment=System Management, Backup & RGB Control
+Exec=/usr/bin/arclight
+StartupWMClass=arclight
+Icon=arclight
+Terminal=false
+Type=Application
+Categories=System;Utility;
+Keywords=backup;btrfs;rgb;nvme;sync;

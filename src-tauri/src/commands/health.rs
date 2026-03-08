@@ -77,7 +77,7 @@ fn get_health_sync() -> HealthCheck {
         }
 
         // Automatic timeline snapshot creation/cleanup is handled by snapper's systemd timers.
-        // backsnap itself does not run periodic snapper cleanup.
+        // arclight itself does not run periodic snapper cleanup.
         if cmd_exists("systemctl") {
             let timeline = run_cmd("systemctl", &["is-active", "snapper-timeline.timer"]);
             if timeline.stdout.trim() != "active" {

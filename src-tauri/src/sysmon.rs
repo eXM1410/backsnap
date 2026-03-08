@@ -68,6 +68,7 @@ pub struct GpuInfo {
     pub vram_total_mib: Option<u64>,
     pub vram_used_mib: Option<u64>,
     pub gpu_busy_percent: Option<u64>,
+    pub gpu_clock_mhz: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -181,7 +182,9 @@ fn detect_cpu_temp() -> String {
         return String::new();
     }
 
-    let Ok(entries) = fs::read_dir(hwmon) else { return String::new() };
+    let Ok(entries) = fs::read_dir(hwmon) else {
+        return String::new();
+    };
 
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -652,7 +655,11 @@ fn get_cpu_arch() -> String {
         .arg("-m")
         .output()
         .ok()
-        .filter(|o| o.status.success()).map_or_else(|| "unknown".to_string(), |o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|o| o.status.success())
+        .map_or_else(
+            || "unknown".to_string(),
+            |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        )
 }
 
 fn get_cpu_count() -> (u32, u32) {
@@ -686,7 +693,9 @@ fn get_cpu_count() -> (u32, u32) {
     } else {
         // CAST-SAFETY: CPU physical core count always fits u32
         #[allow(clippy::cast_possible_truncation)]
-        { core_ids.len() as u32 }
+        {
+            core_ids.len() as u32
+        }
     };
 
     (cores, threads)
@@ -786,6 +795,28 @@ fn read_gpu_busy(drm_dir: &str) -> Option<u64> {
     read_u64(&busy_path)
 }
 
+fn read_gpu_clock(drm_dir: &str) -> Option<u32> {
+    if drm_dir.is_empty() {
+        return None;
+    }
+    let sclk_path = format!("{}/pp_dpm_sclk", drm_dir);
+    if let Ok(content) = fs::read_to_string(&sclk_path) {
+        for line in content.lines() {
+            if line.contains('*') {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    // e.g. "1: 1900Mhz *" -> parse "1900Mhz" -> 1900
+                    let s = parts[1].trim_end_matches(|c: char| !c.is_ascii_digit());
+                    if let Ok(mhz) = s.parse::<u32>() {
+                        return Some(mhz);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Query nvidia-smi for GPU info (temp, power, utilization, vram, name)
 /// Returns (name, temp_c, power_w, vram_total_mib, vram_used_mib, gpu_busy_pct)
 type NvidiaSmiInfo = (
@@ -795,12 +826,13 @@ type NvidiaSmiInfo = (
     Option<u64>,
     Option<u64>,
     Option<u64>,
+    Option<u32>,
 );
 
 fn read_nvidia_smi() -> Option<NvidiaSmiInfo> {
     let output = std::process::Command::new("nvidia-smi")
         .args([
-            "--query-gpu=name,temperature.gpu,power.draw,memory.total,memory.used,utilization.gpu",
+            "--query-gpu=name,temperature.gpu,power.draw,memory.total,memory.used,utilization.gpu,clocks.current.graphics",
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -819,7 +851,8 @@ fn read_nvidia_smi() -> Option<NvidiaSmiInfo> {
     let vram_total = parts[3].parse::<u64>().ok();
     let vram_used = parts[4].parse::<u64>().ok();
     let gpu_busy = parts[5].parse::<u64>().ok();
-    Some((name, temp, power, vram_total, vram_used, gpu_busy))
+    let clock = parts.get(6).and_then(|s| s.parse::<u32>().ok());
+    Some((name, temp, power, vram_total, vram_used, gpu_busy, clock))
 }
 
 // CAST-SAFETY: µW / µA / µV sensor values from sysfs; f64 precision loss is negligible
@@ -964,8 +997,14 @@ pub(crate) fn read_system_monitor() -> SystemMonitorData {
     let cpu_temp = read_temp_celsius(&cpu_temp_path);
 
     // GPU
-    let (gpu_name, gpu_temp, gpu_power, vram_total, vram_used, gpu_busy) =
-        read_gpu_sensors(use_nvidia, &cached.gpu_name, &gpu_temp_path, &gpu_power_path, &gpu_drm_dir);
+    let (gpu_name, gpu_temp, gpu_power, vram_total, vram_used, gpu_busy, gpu_clock) =
+        read_gpu_sensors(
+            use_nvidia,
+            &cached.gpu_name,
+            &gpu_temp_path,
+            &gpu_power_path,
+            &gpu_drm_dir,
+        );
 
     // Battery (use cloned paths)
     let battery = read_battery_from_paths(
@@ -1001,6 +1040,7 @@ pub(crate) fn read_system_monitor() -> SystemMonitorData {
             vram_total_mib: vram_total,
             vram_used_mib: vram_used,
             gpu_busy_percent: gpu_busy,
+            gpu_clock_mhz: gpu_clock,
         },
         load: read_loadavg(),
         uptime: read_uptime_info(),
@@ -1020,12 +1060,22 @@ pub(crate) fn read_system_monitor() -> SystemMonitorData {
 // CAST-SAFETY: millidegrees from sysfs sensor; f64 precision is more than sufficient
 #[allow(clippy::cast_precision_loss)]
 fn read_temp_celsius(path: &str) -> Option<f64> {
-    if path.is_empty() { return None; }
+    if path.is_empty() {
+        return None;
+    }
     read_i64(path).map(|mdeg| mdeg as f64 / 1000.0)
 }
 
 /// Returns (name, temp_c, power_w, vram_total_mib, vram_used_mib, gpu_busy_pct)
-type GpuSensorInfo = (String, Option<f64>, Option<f64>, Option<u64>, Option<u64>, Option<u64>);
+type GpuSensorInfo = (
+    String,
+    Option<f64>,
+    Option<f64>,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    Option<u32>,
+);
 
 /// Read GPU sensors from AMD sysfs or nvidia-smi.
 fn read_gpu_sensors(
@@ -1036,8 +1086,17 @@ fn read_gpu_sensors(
     drm_dir: &str,
 ) -> GpuSensorInfo {
     if use_nvidia {
-        return read_nvidia_smi()
-            .unwrap_or_else(|| (fallback_name.to_string(), None, None, None, None, None));
+        return read_nvidia_smi().unwrap_or_else(|| {
+            (
+                fallback_name.to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        });
     }
     let temp = read_temp_celsius(temp_path);
     // CAST-SAFETY: microwatts from sysfs sensor; f64 precision is sufficient
@@ -1049,7 +1108,8 @@ fn read_gpu_sensors(
     };
     let (vt, vu) = read_gpu_vram(drm_dir);
     let busy = read_gpu_busy(drm_dir);
-    (fallback_name.to_string(), temp, power, vt, vu, busy)
+    let clock = read_gpu_clock(drm_dir);
+    (fallback_name.to_string(), temp, power, vt, vu, busy, clock)
 }
 
 /// Compute total system power: prefer platform (psys), else sum known sources.
@@ -1059,10 +1119,16 @@ fn compute_total_power(
     gpu: Option<f64>,
     dram: Option<f64>,
 ) -> Option<f64> {
-    if psys.is_some() { return psys; }
+    if psys.is_some() {
+        return psys;
+    }
     let sources = [cpu, gpu, dram];
     let sum: f64 = sources.iter().filter_map(|s| *s).sum();
-    if sources.iter().any(std::option::Option::is_some) { Some(sum) } else { None }
+    if sources.iter().any(std::option::Option::is_some) {
+        Some(sum)
+    } else {
+        None
+    }
 }
 
 fn read_loadavg() -> LoadAvg {

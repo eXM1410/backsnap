@@ -909,7 +909,7 @@ export default function Settings() {
         {integration && (
           <div className="grid grid-cols-2 gap-2 mb-4">
             {([
-              { key: "binary",      label: "Binary",          desc: "/usr/local/bin/backsnap" },
+              { key: "binary",      label: "Binary",          desc: "/usr/local/bin/arclight" },
               { key: "desktop",     label: "App-Launcher",    desc: "/usr/share/applications" },
               { key: "polkit",      label: "Polkit-Regel",    desc: "Kein Passwort-Prompt" },
               { key: "pacman_hook", label: "Pacman-Hook",     desc: "Pre-Update Snapshot" },
@@ -991,7 +991,7 @@ export default function Settings() {
 
       {/* Config Path Info */}
       <div className="text-xs text-zinc-600 text-center">
-        Config: ~/.config/backsnap/config.toml
+        Config: ~/.config/arclight/config.toml
       </div>
     </div>
   );

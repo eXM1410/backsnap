@@ -51,7 +51,10 @@ fn upsert_sort_key(content: &str, sort_key: &str) -> String {
     if let Some(i) = lines.iter().position(|l| l.starts_with("sort-key ")) {
         lines[i] = format!("sort-key {}", sort_key);
     } else {
-        let at = lines.iter().position(|l| l.starts_with("title ")).map_or(0, |i| i + 1);
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("title "))
+            .map_or(0, |i| i + 1);
         lines.insert(at, format!("sort-key {}", sort_key));
     }
     lines.join("\n")
@@ -59,7 +62,13 @@ fn upsert_sort_key(content: &str, sort_key: &str) -> String {
 
 /// Sort-key: LTS(1) → normal(2) → rescue(8), cross-entries get `9` prefix.
 fn entry_sort_key(base: &str, cross: bool) -> String {
-    let n = if base.contains("-lts") { "1" } else if base.contains("-rescue") { "8" } else { "2" };
+    let n = if base.contains("-lts") {
+        "1"
+    } else if base.contains("-rescue") {
+        "8"
+    } else {
+        "2"
+    };
     format!("{}{n}-{base}", if cross { "9" } else { "" })
 }
 
@@ -113,7 +122,10 @@ pub(super) fn patch_backup_boot_entries(
 
         // Ensure sort-key exists (survives kernel-hook overwrites)
         if !fname.contains("-cross-") {
-            let with_sk = upsert_sort_key(&content, &entry_sort_key(fname.trim_end_matches(".conf"), false));
+            let with_sk = upsert_sort_key(
+                &content,
+                &entry_sort_key(fname.trim_end_matches(".conf"), false),
+            );
             if with_sk != content {
                 let _ = write_privileged(&format!("{}/{}", primary_dir, fname), &with_sk);
                 content = with_sk;
@@ -121,7 +133,10 @@ pub(super) fn patch_backup_boot_entries(
         }
 
         let patched = relabel_entry(
-            &content.replace(&format!("UUID={}", primary_uuid), &format!("UUID={}", backup_uuid)),
+            &content.replace(
+                &format!("UUID={}", primary_uuid),
+                &format!("UUID={}", backup_uuid),
+            ),
             &short_label,
         );
 
@@ -133,7 +148,9 @@ pub(super) fn patch_backup_boot_entries(
 
     // ── Remove stale entries on backup (but not cross-entries) ──
     for fname in list_conf_files(&backup_dir) {
-        if fname.contains("-cross-") { continue; }
+        if fname.contains("-cross-") {
+            continue;
+        }
         if !names.contains(fname.as_str()) {
             let path = format!("{}/{}", backup_dir, fname);
             if run_privileged("rm", &["-f", &path]).success {
@@ -146,7 +163,9 @@ pub(super) fn patch_backup_boot_entries(
     if ok == 0 {
         let msg = format!(
             "FEHLER: 0/{} Boot-Entries gepatcht. UUID {} → {}",
-            conf_files.len(), primary_uuid, backup_uuid
+            conf_files.len(),
+            primary_uuid,
+            backup_uuid
         );
         sync_log(log_path, &msg);
         return Err(msg);
@@ -156,7 +175,10 @@ pub(super) fn patch_backup_boot_entries(
         log_path,
         &format!(
             "Boot-Entry-Sync OK: {}/{} Einträge (UUID: {} → {})",
-            ok, conf_files.len(), primary_uuid, backup_uuid
+            ok,
+            conf_files.len(),
+            primary_uuid,
+            backup_uuid
         ),
     );
     Ok(())
@@ -181,23 +203,37 @@ pub(super) fn write_cross_boot_entries(
 
     let conf_files = list_conf_files(primary_esp);
     if conf_files.is_empty() {
-        sync_log(log_path, &format!(
-            "WARNUNG: Keine .conf in {} — Cross-Boot-Entries übersprungen.", primary_esp
-        ));
+        sync_log(
+            log_path,
+            &format!(
+                "WARNUNG: Keine .conf in {} — Cross-Boot-Entries übersprungen.",
+                primary_esp
+            ),
+        );
         return;
     }
 
-    let tag_primary = sanitize_label(primary_label, 40).replace(' ', "").to_lowercase();
-    let tag_backup = sanitize_label(backup_label, 40).replace(' ', "").to_lowercase();
+    let tag_primary = sanitize_label(primary_label, 40)
+        .replace(' ', "")
+        .to_lowercase();
+    let tag_backup = sanitize_label(backup_label, 40)
+        .replace(' ', "")
+        .to_lowercase();
 
     let mut written_backup = Vec::new(); // cross-entry names written to backup ESP
     let mut written_primary = Vec::new(); // cross-entry names written to primary ESP
 
     for fname in &conf_files {
-        if fname.contains("-cross-") { continue; }
+        if fname.contains("-cross-") {
+            continue;
+        }
 
-        let Ok(content) = read_privileged(&format!("{}/{}", primary_esp, fname)) else { continue };
-        if !content.contains(&format!("UUID={}", primary_uuid)) { continue; }
+        let Ok(content) = read_privileged(&format!("{}/{}", primary_esp, fname)) else {
+            continue;
+        };
+        if !content.contains(&format!("UUID={}", primary_uuid)) {
+            continue;
+        }
 
         let base = fname.trim_end_matches(".conf");
         let sort = entry_sort_key(base, true);
@@ -226,20 +262,34 @@ pub(super) fn write_cross_boot_entries(
     let valid_primary: HashSet<_> = written_primary.iter().map(String::as_str).collect();
 
     for fname in list_conf_files(&backup_esp) {
-        if fname.contains("-cross-") && !valid_backup.contains(fname.as_str())
-            && run_privileged("rm", &["-f", &format!("{}/{}", backup_esp, fname)]).success {
-                sync_log(log_path, &format!("Stale Cross-Entry entfernt (Backup): {}", fname));
-            }
+        if fname.contains("-cross-")
+            && !valid_backup.contains(fname.as_str())
+            && run_privileged("rm", &["-f", &format!("{}/{}", backup_esp, fname)]).success
+        {
+            sync_log(
+                log_path,
+                &format!("Stale Cross-Entry entfernt (Backup): {}", fname),
+            );
+        }
     }
     for fname in list_conf_files(primary_esp) {
-        if fname.contains("-cross-") && !valid_primary.contains(fname.as_str())
-            && run_privileged("rm", &["-f", &format!("{}/{}", primary_esp, fname)]).success {
-                sync_log(log_path, &format!("Stale Cross-Entry entfernt (Primary): {}", fname));
-            }
+        if fname.contains("-cross-")
+            && !valid_primary.contains(fname.as_str())
+            && run_privileged("rm", &["-f", &format!("{}/{}", primary_esp, fname)]).success
+        {
+            sync_log(
+                log_path,
+                &format!("Stale Cross-Entry entfernt (Primary): {}", fname),
+            );
+        }
     }
 
-    sync_log(log_path, &format!(
-        "Cross-Boot-Entries: {} auf Backup-ESP, {} auf Primary-ESP",
-        written_backup.len(), written_primary.len()
-    ));
+    sync_log(
+        log_path,
+        &format!(
+            "Cross-Boot-Entries: {} auf Backup-ESP, {} auf Primary-ESP",
+            written_backup.len(),
+            written_primary.len()
+        ),
+    );
 }

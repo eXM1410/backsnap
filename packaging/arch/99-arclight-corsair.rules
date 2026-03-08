@@ -1,0 +1,3 @@
+# Corsair HID devices — allow user access for Arclight RGB/fan control.
+# Matches all Corsair peripherals (Commander Core XT, iCUE NEXUS, etc.)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", MODE="0666"

@@ -1,0 +1,8 @@
+// arclight — wheel-Mitglieder dürfen arclight ohne Passwort privilegiert ausführen
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("program") == "/usr/bin/arclight" &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});

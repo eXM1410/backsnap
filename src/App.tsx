@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
-import { Routes, Route, NavLink, useLocation } from "react-router-dom";
+import { Routes, Route, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   LayoutDashboard,
   Camera,
   RefreshCw,
-  Clock,
   Settings,
   HardDrive,
   Terminal,
@@ -16,11 +17,12 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Wifi,
+  Lightbulb,
+  Bot,
 } from "lucide-react";
 import Dashboard from "./pages/Dashboard";
 import Snapshots from "./pages/Snapshots";
 import Sync from "./pages/Sync";
-import Schedule from "./pages/Schedule";
 import Disks from "./pages/Disks";
 import Logs from "./pages/Logs";
 import SettingsPage from "./pages/Settings";
@@ -28,7 +30,9 @@ import Monitor from "./pages/Monitor";
 import Cleanup from "./pages/Cleanup";
 import Tuning from "./pages/Tuning";
 import PiRemote from "./pages/PiRemote";
+import Lighting from "./pages/Lighting";
 import BootGuard from "./pages/BootGuard";
+import Assistant from "./pages/Assistant";
 import Widget from "./pages/Widget";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import SetupWizard from "./components/SetupWizard";
@@ -39,10 +43,11 @@ const nav = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/snapshots", icon: Camera, label: "Snapshots" },
   { to: "/sync", icon: RefreshCw, label: "NVMe Sync" },
-  { to: "/schedule", icon: Clock, label: "Sync-Zeitplan" },
   { to: "/cleanup", icon: Trash2, label: "Aufräumen" },
   { to: "/tuning", icon: Gauge, label: "Tuning" },
   { to: "/pi", icon: Wifi, label: "Pi Remote" },
+  { to: "/lighting", icon: Lightbulb, label: "Lighting" },
+  { to: "/assistant", icon: Bot, label: "Assistant" },
   { to: "/boot-guard", icon: ShieldCheck, label: "Boot Guard" },
   { to: "/disks", icon: HardDrive, label: "Disks" },
   { to: "/logs", icon: Terminal, label: "Logs" },
@@ -51,8 +56,17 @@ const nav = [
 
 export default function App() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(true);
   const [showWizard, setShowWizard] = useState(false);
+
+  // Listen for Rust "navigate-assistant" events (clap detection)
+  useEffect(() => {
+    const unlisten = listen("navigate-assistant", () => {
+      navigate("/assistant");
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, [navigate]);
 
   useEffect(() => {
     api.getConfig().then((cfg) => {
@@ -74,10 +88,24 @@ export default function App() {
     );
   }
 
+  // Assistant mode — fullscreen, no sidebar (Iron Man HUD)
+  const isAssistant = location.pathname === "/assistant";
+
+  // Toggle true fullscreen when entering/leaving assistant
+  useEffect(() => {
+    const win = getCurrentWindow();
+    if (isAssistant) {
+      win.setFullscreen(true);
+    } else {
+      win.setFullscreen(false);
+    }
+  }, [isAssistant]);
+
   return (
     <div className="flex h-screen overflow-hidden">
       {showWizard && <SetupWizard onComplete={() => setShowWizard(false)} />}
-      {/* Sidebar */}
+      {/* Sidebar — hidden on assistant page */}
+      {!isAssistant && (
       <aside
         className={`${
           collapsed ? "w-16" : "w-56"
@@ -86,7 +114,7 @@ export default function App() {
         {/* Logo */}
         <div className={`flex items-center ${collapsed ? "justify-center px-2" : "gap-2.5 px-5"} py-5 border-b border-zinc-800`}>
           <Shield className="w-7 h-7 text-cyan-400 shrink-0" />
-          {!collapsed && <span className="text-lg font-bold tracking-tight">backsnap</span>}
+          {!collapsed && <span className="text-lg font-bold tracking-tight">Arclight</span>}
         </div>
 
         {/* Navigation */}
@@ -135,10 +163,11 @@ export default function App() {
         </div>
         {!collapsed && (
           <div className="px-4 py-2 border-t border-zinc-800 text-xs text-zinc-600">
-            backsnap v0.1.0
+            arclight v0.1.0
           </div>
         )}
       </aside>
+      )}
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto">
@@ -148,10 +177,11 @@ export default function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/snapshots" element={<Snapshots />} />
             <Route path="/sync" element={<Sync />} />
-            <Route path="/schedule" element={<Schedule />} />
             <Route path="/cleanup" element={<Cleanup />} />
             <Route path="/tuning" element={<Tuning />} />
             <Route path="/pi" element={<PiRemote />} />
+            <Route path="/lighting" element={<Lighting />} />
+            <Route path="/assistant" element={<Assistant />} />
             <Route path="/boot-guard" element={<BootGuard />} />
             <Route path="/disks" element={<Disks />} />
             <Route path="/logs" element={<Logs />} />

@@ -134,7 +134,7 @@ pub async fn install_timer(calendar: String, delay: String) -> Result<CommandRes
 
     let service_content = format!(
         "[Unit]\n\
-         Description=backsnap System Sync\n\
+         Description=arclight System Sync\n\
          After=local-fs.target\n\
          \n\
          [Service]\n\
@@ -155,7 +155,7 @@ pub async fn install_timer(calendar: String, delay: String) -> Result<CommandRes
 
     let timer_content = format!(
         "[Unit]\n\
-         Description=backsnap Sync Timer\n\
+         Description=arclight Sync Timer\n\
          \n\
          [Timer]\n\
          OnCalendar={calendar}\n\
@@ -170,7 +170,7 @@ pub async fn install_timer(calendar: String, delay: String) -> Result<CommandRes
 
     let rapl_content =
         "[Unit]\n\
-         Description=backsnap RAPL energy permissions\n\
+         Description=arclight RAPL energy permissions\n\
          After=local-fs.target\n\
          \n\
          [Service]\n\
@@ -182,7 +182,7 @@ pub async fn install_timer(calendar: String, delay: String) -> Result<CommandRes
 
     let svc_path = format!("/etc/systemd/system/{}", c.sync.service_unit);
     let tmr_path = format!("/etc/systemd/system/{}", c.sync.timer_unit);
-    let rapl_path = "/etc/systemd/system/backsnap-rapl-perms.service".to_string();
+    let rapl_path = "/etc/systemd/system/arclight-rapl-perms.service".to_string();
 
     // Single privileged batch for all file writes
     let ops = vec![
@@ -193,8 +193,8 @@ pub async fn install_timer(calendar: String, delay: String) -> Result<CommandRes
     run_file_ops_batch(&ops)
         .map_err(|e| format!("Timer-Dateien installieren: {}", e))?;
 
-    let _ = run_privileged("systemctl", &["enable", "backsnap-rapl-perms.service"]);
-    let _ = run_privileged("systemctl", &["start", "backsnap-rapl-perms.service"]);
+    let _ = run_privileged("systemctl", &["enable", "arclight-rapl-perms.service"]);
+    let _ = run_privileged("systemctl", &["start", "arclight-rapl-perms.service"]);
 
     let r = run_privileged("systemctl", &["daemon-reload"]);
     if !r.success {
@@ -237,13 +237,13 @@ pub async fn uninstall_timer() -> Result<CommandResult, String> {
             FileOp::Delete { path: svc_path },
             FileOp::Delete { path: tmr_path },
             FileOp::Delete {
-                path: "/etc/systemd/system/backsnap-rapl-perms.service".into(),
+                path: "/etc/systemd/system/arclight-rapl-perms.service".into(),
             },
         ];
 
         let _ = run_privileged(
             "systemctl",
-            &["disable", "--now", "backsnap-rapl-perms.service"],
+            &["disable", "--now", "arclight-rapl-perms.service"],
         );
         let _ = run_file_ops_batch(&ops);
         let _ = run_privileged("systemctl", &["daemon-reload"]);

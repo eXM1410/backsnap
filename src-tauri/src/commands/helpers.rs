@@ -74,7 +74,7 @@ pub static BTRFS_USAGE_CACHE: TtlCache<String> = TtlCache::new();
 
 // Use a single global path that works across privilege boundaries.
 // If root uses /run but the GUI user falls back to /tmp, serialization breaks.
-pub const EFI_LOCK_PATH: &str = "/tmp/backsnap-efi.lock";
+pub const EFI_LOCK_PATH: &str = "/tmp/arclight-efi.lock";
 
 fn open_lockfile_for_flock(path: &str) -> Result<fs::File, String> {
     use std::os::unix::fs::PermissionsExt;
@@ -179,9 +179,9 @@ impl EfiMountLock {
 // ─── Centralized Paths ────────────────────────────────────────
 
 // Same reasoning as EFI_LOCK_PATH: this must be identical across root/non-root.
-pub const LOCK_PATH: &str = "/tmp/backsnap-sync.lock";
-pub const ROLLBACK_TMPDIR: &str = "/tmp/backsnap-rollback";
-pub const BOOT_MOUNT: &str = "/tmp/backsnap-boot";
+pub const LOCK_PATH: &str = "/tmp/arclight-sync.lock";
+pub const ROLLBACK_TMPDIR: &str = "/tmp/arclight-rollback";
+pub const BOOT_MOUNT: &str = "/tmp/arclight-boot";
 
 // ─── Home Mountpoint ──────────────────────────────────────────
 
@@ -190,7 +190,9 @@ pub fn get_home_mountpoint() -> String {
     const MOUNTS: &[(&str, &str)] = &[("/var/home", "/var/home/"), ("/Users", "/Users/")];
     if let Some(home) = dirs::home_dir() {
         for &(prefix, mount) in MOUNTS {
-            if home.starts_with(prefix) { return mount.to_string(); }
+            if home.starts_with(prefix) {
+                return mount.to_string();
+            }
         }
     }
     "/home/".to_string()
@@ -412,7 +414,7 @@ pub enum FileOp {
 }
 
 /// Execute a batch of privileged file operations with a single pkexec call.
-/// When already root, executes directly. Otherwise spawns `pkexec backsnap --file-ops <json>`.
+/// When already root, executes directly. Otherwise spawns `pkexec arclight --file-ops <json>`.
 pub fn run_file_ops_batch(ops: &[FileOp]) -> Result<(), String> {
     if ops.is_empty() {
         return Ok(());
@@ -480,7 +482,10 @@ pub fn list_conf_files(dir: &str) -> Vec<String> {
         let mut files: Vec<String> = rd
             .flatten()
             .filter_map(|e| {
-                let is_conf = e.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("conf"));
+                let is_conf = e
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("conf"));
                 is_conf.then(|| e.file_name().to_string_lossy().into_owned())
             })
             .collect();
@@ -496,7 +501,11 @@ pub fn list_conf_files(dir: &str) -> Vec<String> {
             .stdout
             .lines()
             .map(str::trim)
-            .filter(|l| std::path::Path::new(l).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("conf")))
+            .filter(|l| {
+                std::path::Path::new(l)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("conf"))
+            })
             .map(String::from)
             .collect();
         files.sort();
@@ -656,14 +665,17 @@ pub fn activity_log_path() -> PathBuf {
     dirs::data_local_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("backsnap")
+        .join("arclight")
         .join("activity.log")
 }
 
 pub fn read_activity_log_lines(max_lines: usize) -> Vec<String> {
     let path = activity_log_path();
     let content = fs::read_to_string(path).unwrap_or_default();
-    let mut lines: Vec<String> = content.lines().map(std::string::ToString::to_string).collect();
+    let mut lines: Vec<String> = content
+        .lines()
+        .map(std::string::ToString::to_string)
+        .collect();
     if lines.len() > max_lines {
         lines = lines.split_off(lines.len() - max_lines);
     }
@@ -709,7 +721,9 @@ pub fn sync_log(log_path: &str, msg: &str) {
 }
 
 pub fn rotate_log(log_path: &str, max_lines: usize) {
-    let Ok(content) = fs::read_to_string(log_path) else { return };
+    let Ok(content) = fs::read_to_string(log_path) else {
+        return;
+    };
     let lines: Vec<&str> = content.lines().collect();
     if lines.len() > max_lines {
         let keep = &lines[lines.len() - max_lines..];
@@ -762,16 +776,18 @@ pub fn preload_cli_config(path: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// Spawn `pkexec backsnap <args> --config <user-config>` and relay JSON progress
+/// Spawn `pkexec arclight <args> --config <user-config>` and relay JSON progress
 /// lines as Tauri events.  Used by sync and rollback elevated wrappers.
 pub fn relay_elevated_subprocess(
-    app: &tauri::AppHandle, extra_args: &[&str],
+    app: &tauri::AppHandle,
+    extra_args: &[&str],
 ) -> Result<CommandResult, String> {
     use tauri::Emitter;
 
     let exe = std::env::current_exe()
         .map_err(|e| format!("current_exe: {}", e))?
-        .to_string_lossy().into_owned();
+        .to_string_lossy()
+        .into_owned();
     let user_config = crate::config::config_path();
     let config_str = user_config.to_string_lossy().into_owned();
 
@@ -795,30 +811,41 @@ pub fn relay_elevated_subprocess(
         let mut final_result: Option<CommandResult> = None;
         for line in reader.lines().map_while(Result::ok) {
             let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
-            let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) else { continue };
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                continue;
+            };
             match obj.get("type").and_then(|t| t.as_str()) {
                 Some("progress") => {
-                    let _ = app_clone.emit("sync-progress", serde_json::json!({
-                        "step": obj["step"].as_str().unwrap_or_default(),
-                        "detail": obj["detail"].as_str().unwrap_or_default(),
-                        "percent": obj["percent"].as_u64().unwrap_or_default(),
-                    }));
+                    let _ = app_clone.emit(
+                        "sync-progress",
+                        serde_json::json!({
+                            "step": obj["step"].as_str().unwrap_or_default(),
+                            "detail": obj["detail"].as_str().unwrap_or_default(),
+                            "percent": obj["percent"].as_u64().unwrap_or_default(),
+                        }),
+                    );
                 }
                 Some("bytes") => {
-                    let _ = app_clone.emit("rsync-bytes-progress", serde_json::json!({
-                        "phase": obj["phase"].as_str().unwrap_or_default(),
-                        "bytes": obj["bytes"].as_u64().unwrap_or_default(),
-                        "pct": obj["pct"].as_u64().unwrap_or_default(),
-                        "speed": obj["speed"].as_str().unwrap_or_default(),
-                    }));
+                    let _ = app_clone.emit(
+                        "rsync-bytes-progress",
+                        serde_json::json!({
+                            "phase": obj["phase"].as_str().unwrap_or_default(),
+                            "bytes": obj["bytes"].as_u64().unwrap_or_default(),
+                            "pct": obj["pct"].as_u64().unwrap_or_default(),
+                            "speed": obj["speed"].as_str().unwrap_or_default(),
+                        }),
+                    );
                 }
                 Some("result") => {
                     final_result = Some(CommandResult {
                         success: obj["success"].as_bool().unwrap_or_default(),
                         stdout: obj["stdout"].as_str().unwrap_or_default().to_string(),
                         stderr: obj["stderr"].as_str().unwrap_or_default().to_string(),
-                        exit_code: i32::try_from(obj["exit_code"].as_i64().unwrap_or(-1)).unwrap_or(-1),
+                        exit_code: i32::try_from(obj["exit_code"].as_i64().unwrap_or(-1))
+                            .unwrap_or(-1),
                     });
                 }
                 _ => {}
@@ -840,9 +867,13 @@ pub fn relay_elevated_subprocess(
     match final_result {
         Some(r) => Ok(r),
         None if status.success() => Ok(CommandResult {
-            success: true, stdout: "Abgeschlossen".to_string(), stderr: stderr_str, exit_code: 0,
+            success: true,
+            stdout: "Abgeschlossen".to_string(),
+            stderr: stderr_str,
+            exit_code: 0,
         }),
-        None => Err(format!("elevated exit={}: {}",
+        None => Err(format!(
+            "elevated exit={}: {}",
             status.code().unwrap_or(-1),
             stderr_str.lines().take(10).collect::<Vec<_>>().join("\n")
         )),
@@ -854,19 +885,25 @@ pub fn relay_elevated_subprocess(
 pub fn emit_cli_result(result: Result<CommandResult, String>, error_label: &str) -> i32 {
     match result {
         Ok(r) => {
-            println!("{}", serde_json::json!({
-                "type": "result", "success": r.success,
-                "stdout": r.stdout, "stderr": r.stderr, "exit_code": r.exit_code,
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "type": "result", "success": r.success,
+                    "stdout": r.stdout, "stderr": r.stderr, "exit_code": r.exit_code,
+                })
+            );
             0
         }
         Err(e) => {
             let c = cfg();
             sync_log(&c.sync.log_path, &format!("{}: {}", error_label, e));
-            println!("{}", serde_json::json!({
-                "type": "result", "success": false,
-                "stdout": "", "stderr": e, "exit_code": 1,
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "type": "result", "success": false,
+                    "stdout": "", "stderr": e, "exit_code": 1,
+                })
+            );
             1
         }
     }
@@ -881,10 +918,14 @@ fn format_bytes_human(raw: &str) -> String {
         Err(_) => return "0B".to_string(),
     };
     const UNITS: &[(f64, &str)] = &[
-        (1_099_511_627_776.0, "T"), (1_073_741_824.0, "G"), (1_048_576.0, "M"),
+        (1_099_511_627_776.0, "T"),
+        (1_073_741_824.0, "G"),
+        (1_048_576.0, "M"),
     ];
     for &(threshold, suffix) in UNITS {
-        if bytes >= threshold { return format!("{:.1}{}", bytes / threshold, suffix); }
+        if bytes >= threshold {
+            return format!("{:.1}{}", bytes / threshold, suffix);
+        }
     }
     format!("{bytes}B")
 }
@@ -927,7 +968,7 @@ pub fn disk_label(uuid: &str, c: &AppConfig) -> String {
 /// Uses sudo with NOPASSWD rules for the specific mount point.
 /// Returns (used_bytes, avail_bytes, use_percent) as strings, or None on failure.
 fn probe_unmounted_usage(dev: &str) -> Option<(String, String, String)> {
-    let mnt = "/tmp/backsnap-efi-check";
+    let mnt = "/tmp/arclight-efi-check";
     let _ = fs::create_dir_all(mnt);
     let mount_res = run_cmd("sudo", &["mount", "-o", "ro", dev, mnt]);
     if !mount_res.success {
@@ -975,7 +1016,7 @@ fn shortest_mountpoint(val: &serde_json::Value) -> String {
         .map_or("Nicht gemountet".to_string(), str::to_string)
 }
 
-/// Classify a partition by its role in the Backsnap setup.
+/// Classify a partition by its role in the Arclight setup.
 fn partition_role(uuid: &str, mountpoint: &str, c: &AppConfig) -> &'static str {
     use super::boot::DiskSide;
     match DiskSide::from_uuid(uuid, c) {
@@ -992,8 +1033,18 @@ fn partition_role(uuid: &str, mountpoint: &str, c: &AppConfig) -> &'static str {
 fn build_df_map() -> std::collections::HashMap<String, (String, String, String)> {
     let df = run_cmd(
         "df",
-        &["-B1", "--output=source,used,avail,pcent",
-          "-t", "btrfs", "-t", "vfat", "-t", "ext4", "-t", "xfs"],
+        &[
+            "-B1",
+            "--output=source,used,avail,pcent",
+            "-t",
+            "btrfs",
+            "-t",
+            "vfat",
+            "-t",
+            "ext4",
+            "-t",
+            "xfs",
+        ],
     );
     df.stdout
         .lines()
@@ -1015,7 +1066,12 @@ pub fn get_disk_info() -> Vec<DiskInfo> {
     let df_map = build_df_map();
     let lsblk = run_cmd(
         "lsblk",
-        &["-b", "-J", "-o", "NAME,MODEL,PKNAME,UUID,MOUNTPOINTS,FSTYPE,SIZE"],
+        &[
+            "-b",
+            "-J",
+            "-o",
+            "NAME,MODEL,PKNAME,UUID,MOUNTPOINTS,FSTYPE,SIZE",
+        ],
     );
     let mut disks: Vec<DiskInfo> = Vec::new();
 
@@ -1027,7 +1083,8 @@ pub fn get_disk_info() -> Vec<DiskInfo> {
     };
 
     for dev in devices {
-        let model = dev.get("model")
+        let model = dev
+            .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("Unbekanntes Laufwerk")
             .trim()
@@ -1047,14 +1104,23 @@ pub fn get_disk_info() -> Vec<DiskInfo> {
             }
 
             let mountpoint = shortest_mountpoint(child);
-            let size_bytes = child.get("size").and_then(serde_json::Value::as_u64).unwrap_or_default();
+            let size_bytes = child
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
             let is_mounted = mountpoint != "Nicht gemountet";
 
             let (used_bytes, avail_bytes, use_percent) = if is_mounted {
-                df_map.get(&name).cloned().unwrap_or(("0".into(), "0".into(), "0%".into()))
+                df_map
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or(("0".into(), "0".into(), "0%".into()))
             } else {
-                probe_unmounted_usage(&format!("/dev/{}", name))
-                    .unwrap_or(("—".into(), "—".into(), "—".into()))
+                probe_unmounted_usage(&format!("/dev/{}", name)).unwrap_or((
+                    "—".into(),
+                    "—".into(),
+                    "—".into(),
+                ))
             };
 
             disks.push(DiskInfo {

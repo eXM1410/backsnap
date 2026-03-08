@@ -1,7 +1,7 @@
 //! Bootloader detection (systemd-boot, grub).
 
-use crate::util::safe_cmd;
 use super::types::BootloaderType;
+use crate::util::safe_cmd;
 
 /// Detect which bootloader is installed.
 pub fn detect_bootloader() -> BootloaderType {

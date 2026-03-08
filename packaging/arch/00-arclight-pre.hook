@@ -1,0 +1,13 @@
+# arclight — automatischer Snapper-Snapshot vor jedem Pacman-Update
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = arclight: Pre-Update Snapshot (falls nötig)...
+When = PreTransaction
+Exec = /usr/lib/arclight/arclight-pacman-pre
+Depends = pacman

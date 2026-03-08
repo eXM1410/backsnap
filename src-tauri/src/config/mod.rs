@@ -10,7 +10,7 @@
 mod boot;
 mod detect;
 mod disk;
-mod io;
+pub(crate) mod io;
 mod types;
 
 pub use detect::auto_detect_config;

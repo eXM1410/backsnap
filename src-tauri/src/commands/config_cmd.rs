@@ -32,7 +32,7 @@ fn exclude_scan_runtime_stats() -> ExcludeScanRuntimeStats {
 fn exclude_scan_log_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("backsnap")
+        .join("arclight")
         .join("exclude-scan-last.jsonl")
 }
 
@@ -266,14 +266,12 @@ pub async fn reset_config(app: tauri::AppHandle) -> Result<config::AppConfig, St
         new_config.boot.bootloader_type
     );
 
-    let changed = old_config
-        .as_ref()
-        .map_or(true, |old| {
-            old.disks.primary_uuid != new_config.disks.primary_uuid
-                || old.disks.backup_uuid != new_config.disks.backup_uuid
-                || old.boot.bootloader_type != new_config.boot.bootloader_type
-                || old.sync.subvolumes.len() != new_config.sync.subvolumes.len()
-        });
+    let changed = old_config.as_ref().map_or(true, |old| {
+        old.disks.primary_uuid != new_config.disks.primary_uuid
+            || old.disks.backup_uuid != new_config.disks.backup_uuid
+            || old.boot.bootloader_type != new_config.boot.bootloader_type
+            || old.sync.subvolumes.len() != new_config.sync.subvolumes.len()
+    });
 
     if changed {
         log_activity_with_app(

@@ -28,9 +28,7 @@ impl BootloaderType {
                     .unwrap_or_default();
                 parse_grub_entries(&cfg, side)
             }
-            Self::SystemdBoot => {
-                read_loader_entries(&format!("{}/loader/entries", base), side)
-            }
+            Self::SystemdBoot => read_loader_entries(&format!("{}/loader/entries", base), side),
         }
     }
 
@@ -129,13 +127,16 @@ pub struct BootEntryInfo {
 
 fn parse_boot_entry(content: &str) -> ParsedBootEntry {
     let mut e = ParsedBootEntry {
-        title: String::new(), root_uuid: String::new(),
-        kernel: String::new(), sort_key: String::new(),
+        title: String::new(),
+        root_uuid: String::new(),
+        kernel: String::new(),
+        sort_key: String::new(),
     };
 
     /// Try to extract `root=UUID=…` or `root=/dev/disk/by-uuid/…` from a token.
     fn extract_root_uuid(token: &str) -> Option<&str> {
-        token.strip_prefix("root=UUID=")
+        token
+            .strip_prefix("root=UUID=")
             .or_else(|| token.strip_prefix("root=/dev/disk/by-uuid/"))
     }
 
@@ -145,15 +146,26 @@ fn parse_boot_entry(content: &str) -> ParsedBootEntry {
             e.title = val.trim().to_string();
         } else if let Some(val) = line.strip_prefix("sort-key ") {
             e.sort_key = val.trim().to_string();
-        } else if line.starts_with("linux ") || line.starts_with("linuxefi ") || line.starts_with("linux16 ") {
+        } else if line.starts_with("linux ")
+            || line.starts_with("linuxefi ")
+            || line.starts_with("linux16 ")
+        {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() > 1 { e.kernel = parts[1].trim_start_matches('/').to_string(); }
+            if parts.len() > 1 {
+                e.kernel = parts[1].trim_start_matches('/').to_string();
+            }
             for p in &parts {
-                if let Some(u) = extract_root_uuid(p) { e.root_uuid = u.to_string(); break; }
+                if let Some(u) = extract_root_uuid(p) {
+                    e.root_uuid = u.to_string();
+                    break;
+                }
             }
         } else if let Some(val) = line.strip_prefix("options ") {
             for p in val.split_whitespace() {
-                if let Some(u) = extract_root_uuid(p) { e.root_uuid = u.to_string(); break; }
+                if let Some(u) = extract_root_uuid(p) {
+                    e.root_uuid = u.to_string();
+                    break;
+                }
             }
         } else if line.starts_with("menuentry ") {
             // GRUB: title is the first quoted string
@@ -412,7 +424,9 @@ fn bootloader_present_on(mnt: &str, bl: BootloaderType, suffix: &str) -> bool {
                 || Path::new(&format!("{}/EFI/grub/grub{}.efi", mnt, suffix)).exists()
                 || Path::new(&format!("{}/grub", mnt)).is_dir()
         }
-        BootloaderType::SystemdBoot => Path::new(&format!("{}/EFI/systemd/systemd-boot{}.efi", mnt, suffix)).exists(),
+        BootloaderType::SystemdBoot => {
+            Path::new(&format!("{}/EFI/systemd/systemd-boot{}.efi", mnt, suffix)).exists()
+        }
     }
 }
 
@@ -420,8 +434,11 @@ fn bootloader_present_on(mnt: &str, bl: BootloaderType, suffix: &str) -> bool {
 
 fn boot_validation_err(msg: String) -> BootValidation {
     BootValidation {
-        backup_efi_accessible: false, bootloader_present: false,
-        entries_valid: false, kernels_present: Vec::new(), kernels_missing: Vec::new(),
+        backup_efi_accessible: false,
+        bootloader_present: false,
+        entries_valid: false,
+        kernels_present: Vec::new(),
+        kernels_missing: Vec::new(),
         entry_issues: vec![msg],
     }
 }
@@ -436,10 +453,15 @@ fn validate_backup_boot(backup_efi_dev: &str, c: &AppConfig) -> BootValidation {
         Err(e) => return boot_validation_err(format!("EFI-Lock fehlgeschlagen: {}", e)),
     };
 
-    let tmp_mnt = unique_tmp_mount("backsnap-boot-validate");
+    let tmp_mnt = unique_tmp_mount("arclight-boot-validate");
     let (mnt, _guard) = match mount_efi_ro(backup_efi_dev, &tmp_mnt) {
         Ok(v) => v,
-        Err(e) => return boot_validation_err(format!("Backup-EFI {} nicht mountbar: {}", backup_efi_dev, e)),
+        Err(e) => {
+            return boot_validation_err(format!(
+                "Backup-EFI {} nicht mountbar: {}",
+                backup_efi_dev, e
+            ))
+        }
     };
 
     let bl = c.boot.bootloader_type;
@@ -507,7 +529,10 @@ fn inspect_backup_efi(
     let efi_lock = match EfiMountLock::acquire_timeout(Duration::from_secs(2)) {
         Ok(g) => Some(g),
         Err(e) => {
-            log::warn!("boot-info: EFI lock failed; skipping backup inspection: {}", e);
+            log::warn!(
+                "boot-info: EFI lock failed; skipping backup inspection: {}",
+                e
+            );
             return (false, None, Vec::new());
         }
     };
@@ -516,7 +541,7 @@ fn inspect_backup_efi(
         return (false, None, Vec::new());
     }
 
-    let tmp_mnt = unique_tmp_mount("backsnap-boot-check");
+    let tmp_mnt = unique_tmp_mount("arclight-boot-check");
     let Ok((mnt, _guard)) = mount_efi_ro(efi_dev, &tmp_mnt) else {
         return (false, None, Vec::new());
     };
@@ -541,7 +566,12 @@ fn normalize_backup_titles(entries: &mut [BootEntryInfo], backup_label: &str) {
     for e in entries.iter_mut().filter(|e| e.disk == DiskSide::Backup) {
         if let (Some(start), Some(end)) = (e.title.find('('), e.title.rfind(')')) {
             if end > start {
-                e.title = format!("{}({}){}", &e.title[..start], backup_label, &e.title[end + 1..]);
+                e.title = format!(
+                    "{}({}){}",
+                    &e.title[..start],
+                    backup_label,
+                    &e.title[end + 1..]
+                );
                 continue;
             }
         }
@@ -611,7 +641,11 @@ fn gather_boot_info(c: &AppConfig) -> BootInfo {
         current_entry = fs::read_to_string("/proc/cmdline")
             .unwrap_or_default()
             .split_whitespace()
-            .find(|p| p.starts_with("BOOT_IMAGE=")).map_or_else(|| "unknown".to_string(), |p| p.trim_start_matches("BOOT_IMAGE=").to_string());
+            .find(|p| p.starts_with("BOOT_IMAGE="))
+            .map_or_else(
+                || "unknown".to_string(),
+                |p| p.trim_start_matches("BOOT_IMAGE=").to_string(),
+            );
     }
 
     // ── Backup EFI entries ──────────────────────────────────

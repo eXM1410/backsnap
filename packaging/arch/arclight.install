@@ -1,0 +1,15 @@
+post_install() {
+  echo "arclight installed."
+  echo "- Launch from the application menu (arclight) or run: arclight"
+  echo "- Optional system integration scripts are installed to: /usr/share/arclight/"
+  echo "  (polkit rule / pacman hook). Review before running."
+  echo "- Autostart is a per-user setting. You can add a .desktop entry in ~/.config/autostart/ if desired."
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  echo "arclight removed."
+}

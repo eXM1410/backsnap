@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
-import { Cpu, MemoryStick, Thermometer, Zap, Monitor as MonitorIcon } from "lucide-react";
-import { api, SystemMonitorData } from "../api";
+import { Cpu, Fan, MemoryStick, Thermometer, Zap, Monitor as MonitorIcon } from "lucide-react";
+import { api, SystemMonitorData, CcxtStatus } from "../api";
 import { Card, Badge, PageHeader, Loading } from "../components/ui";
 
 // ─── Helpers ──────────────────────────────────────────────────
@@ -96,17 +96,6 @@ function PowerRow({ label, watts }: { label: string; watts: number }) {
   );
 }
 
-function LoadPill({ label, value, threads }: { label: string; value: number; threads: number }) {
-  const ratio = value / threads;
-  const color = ratio >= 1.0 ? "red" : ratio >= 0.7 ? "yellow" : "green";
-  return (
-    <div className="flex-1 text-center">
-      <Badge color={color}><span className="font-mono tabular-nums">{value.toFixed(2)}</span></Badge>
-      <div className="text-[10px] text-zinc-600 mt-1">{label}</div>
-    </div>
-  );
-}
-
 function TopCard({ label, icon: Icon, value, unit, sub, color, percent }: {
   label: string; icon: React.ElementType; value: string; unit?: string; sub: string;
   color: string; percent: number;
@@ -134,6 +123,7 @@ function TopCard({ label, icon: Icon, value, unit, sub, color, percent }: {
 
 export default function SystemMonitor() {
   const [data, setData] = useState<SystemMonitorData | null>(null);
+  const [fans, setFans] = useState<CcxtStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const intervalRef = useRef<number | null>(null);
@@ -144,7 +134,12 @@ export default function SystemMonitor() {
       if (fetchingRef.current) return;
       fetchingRef.current = true;
       try {
-        setData(await api.getSystemMonitor());
+        const [sysData, fanData] = await Promise.all([
+          api.getSystemMonitor(),
+          api.corsairCcxtPoll().catch(() => null),
+        ]);
+        setData(sysData);
+        setFans(fanData);
         setError("");
       } catch (e) {
         console.error(e);
@@ -167,7 +162,7 @@ export default function SystemMonitor() {
   );
   if (!data) return <div className="p-8"><Loading /></div>;
 
-  const { cpu, memory, swap, cpu_sensor, gpu, load, uptime, extra_power, nvme_temps } = data;
+  const { cpu, memory, swap, cpu_sensor, gpu, uptime, extra_power, nvme_temps } = data;
   const hasGpu = gpu.name !== "" || gpu.temp_celsius !== null || gpu.power_watts !== null;
   const totalPower = extra_power.total_system_watts ?? ((cpu_sensor.power_watts || 0) + (gpu.power_watts || 0) + (extra_power.dram_watts || 0));
 
@@ -185,26 +180,34 @@ export default function SystemMonitor() {
           sub={`${cpu.cores}C/${cpu.threads}T${cpu.frequency_mhz ? ` · ${(cpu.frequency_mhz / 1000).toFixed(2)} GHz` : ""}`}
           color={usageColor(cpu.usage_percent)} percent={cpu.usage_percent} />
 
+        {hasGpu && (
+          <TopCard label="GPU" icon={MonitorIcon}
+            value={gpu.gpu_busy_percent !== null ? `${gpu.gpu_busy_percent}` : "—"} unit={gpu.gpu_busy_percent !== null ? "%" : ""}
+            sub={[gpu.name ? gpu.name.replace(/\[|\]/g, "").replace(/\(.*?\)/, "").trim() : "GPU", gpu.gpu_clock_mhz ? `${gpu.gpu_clock_mhz} MHz` : null].filter(Boolean).join(" · ")}
+            color="purple" percent={gpu.gpu_busy_percent || 0} />
+        )}
+
         <TopCard label="RAM" icon={MemoryStick}
           value={(memory.used_mib / 1024).toFixed(1)} unit="GiB"
           sub={`von ${(memory.total_mib / 1024).toFixed(1)} GiB · ${memory.percent.toFixed(0)}%`}
           color={usageColor(memory.percent)} percent={memory.percent} />
 
-        {hasGpu && (
-          <TopCard label="GPU" icon={MonitorIcon}
-            value={gpu.gpu_busy_percent !== null ? `${gpu.gpu_busy_percent}` : "—"} unit={gpu.gpu_busy_percent !== null ? "%" : ""}
-            sub={gpu.name ? gpu.name.replace(/\[|\]/g, "").replace(/\(.*?\)/, "").trim() : "GPU"}
-            color="purple" percent={gpu.gpu_busy_percent || 0} />
-        )}
-
-        <TopCard label="Temperatur" icon={Thermometer}
-          value={cpu_sensor.temp_celsius !== null ? cpu_sensor.temp_celsius.toFixed(0) : "—"} unit="°C"
-          sub={[
-            cpu_sensor.temp_celsius !== null ? `CPU ${cpu_sensor.temp_celsius.toFixed(0)}°` : null,
-            gpu.temp_celsius !== null ? `GPU ${gpu.temp_celsius.toFixed(0)}°` : null,
-          ].filter(Boolean).join(" · ") || "N/A"}
-          color={cpu_sensor.temp_celsius !== null && cpu_sensor.temp_celsius >= 65 ? "amber" : "emerald"}
-          percent={cpu_sensor.temp_celsius ? Math.min(cpu_sensor.temp_celsius, 100) : 0} />
+        {(() => {
+          const probeTemp = fans?.connected
+            ? fans.temps.find(t => t.connected)?.temp ?? null
+            : null;
+          const heroTemp = probeTemp ?? cpu_sensor.temp_celsius;
+          return (
+            <TopCard label="Wasser" icon={Thermometer}
+              value={heroTemp !== null ? heroTemp.toFixed(0) : "—"} unit="°C"
+              sub={[
+                cpu_sensor.temp_celsius !== null ? `CPU ${cpu_sensor.temp_celsius.toFixed(0)}°` : null,
+                gpu.temp_celsius !== null ? `GPU ${gpu.temp_celsius.toFixed(0)}°` : null,
+              ].filter(Boolean).join(" · ") || "N/A"}
+              color={heroTemp !== null && heroTemp >= 65 ? "amber" : "emerald"}
+              percent={heroTemp ? Math.min(heroTemp, 100) : 0} />
+          );
+        })()}
 
         <TopCard label="Energie" icon={Zap}
           value={totalPower > 0 ? totalPower.toFixed(0) : "—"} unit="W"
@@ -291,28 +294,43 @@ export default function SystemMonitor() {
                 ⚡ RAPL: Keine Berechtigung (root nötig für exakte CPU-Power)
               </div>
             )}
-            {totalPower > 0 && (
-              <div className="border-t border-zinc-800/50 pt-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-zinc-500">Gesamt</span>
-                  <span className="text-lg font-black tabular-nums">{totalPower.toFixed(0)}<span className="text-xs text-zinc-500 ml-1">W</span></span>
-                </div>
-                <div className="mt-2">
-                  <Bar value={totalPower} max={400} color={totalPower > 250 ? "red" : totalPower > 150 ? "amber" : "cyan"} h="h-1.5" />
-                </div>
-              </div>
-            )}
-            <div className="border-t border-zinc-800/50 pt-3">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-600 block mb-2">Load Average</span>
-              <div className="flex gap-2">
-                <LoadPill label="1m" value={load.one} threads={cpu.threads} />
-                <LoadPill label="5m" value={load.five} threads={cpu.threads} />
-                <LoadPill label="15m" value={load.fifteen} threads={cpu.threads} />
-              </div>
-            </div>
+
           </div>
         </Card>
       </div>
+
+      {/* ─── Corsair Lüfter ─── */}
+      {fans && fans.connected && fans.fans.some(f => f.connected) && (
+        <Card className="mb-6">
+          <SectionTitle icon={Fan}>Lüfter — {fans.product}</SectionTitle>
+          <div className="grid grid-cols-3 gap-3">
+            {fans.fans.filter(f => f.connected).map((f) => {
+              const rpmPct = Math.min((f.rpm / 2000) * 100, 100);
+              const color = f.rpm > 1600 ? "red" : f.rpm > 1200 ? "amber" : "cyan";
+              return (
+                <div key={f.channel} className="bg-zinc-900/50 rounded-lg p-3 border border-zinc-800/50">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <RingGauge value={rpmPct} size={36} stroke={3} color={color}>
+                        <Fan className="w-3.5 h-3.5 text-zinc-400" />
+                      </RingGauge>
+                      <span className="text-xs font-semibold text-zinc-400">Fan {f.channel + 1}</span>
+                    </div>
+                    <span className="text-sm font-black tabular-nums text-zinc-200">
+                      {f.rpm}<span className="text-[10px] text-zinc-500 ml-0.5">RPM</span>
+                    </span>
+                  </div>
+                  <Bar value={rpmPct} color={color} h="h-1" />
+                  {f.duty > 0 && (
+                    <div className="text-[10px] text-zinc-600 mt-1 text-right font-mono">{f.duty}%</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+        </Card>
+      )}
 
       {/* ─── Memory + GPU ─── */}
       <div className={`grid ${hasGpu ? "grid-cols-2" : "grid-cols-1"} gap-4`}>
@@ -382,7 +400,7 @@ export default function SystemMonitor() {
               <SpecPill label="Temperatur" value={gpu.temp_celsius !== null ? `${gpu.temp_celsius.toFixed(0)}°C` : "—"}
                 highlight={gpu.temp_celsius !== null && gpu.temp_celsius >= 65} />
               <SpecPill label="Verbrauch" value={gpu.power_watts !== null ? `${gpu.power_watts.toFixed(0)} W` : "—"} />
-              <SpecPill label="VRAM" value={gpu.vram_total_mib ? `${(gpu.vram_total_mib / 1024).toFixed(0)} GiB` : "—"} />
+              <SpecPill label="GPU-Takt" value={gpu.gpu_clock_mhz ? `${gpu.gpu_clock_mhz} MHz` : "—"} />
             </div>
           </Card>
         )}

@@ -7,10 +7,19 @@ enum CliCommand {
     SysfsWrite(String),
     FileOps(String),
     VerifyCollect(String),
-    SyncElevated { config: Option<String> },
-    RollbackElevated { snap_id: u32, config: Option<String> },
-    RollbackRecover { config: Option<String> },
-    Sync { config: Option<String> },
+    SyncElevated {
+        config: Option<String>,
+    },
+    RollbackElevated {
+        snap_id: u32,
+        config: Option<String>,
+    },
+    RollbackRecover {
+        config: Option<String>,
+    },
+    Sync {
+        config: Option<String>,
+    },
     Gui,
 }
 
@@ -48,7 +57,10 @@ impl CliCommand {
                     eprintln!("--rollback-elevated benötigt eine Snapshot-ID");
                     std::process::exit(1);
                 });
-            return Self::RollbackElevated { snap_id, config: config() };
+            return Self::RollbackElevated {
+                snap_id,
+                config: config(),
+            };
         }
         if args.iter().any(|a| a == "--rollback-recover") {
             return Self::RollbackRecover { config: config() };
@@ -66,18 +78,22 @@ fn main() {
 
     match CliCommand::from_args(&args) {
         CliCommand::Help => {
-            println!("backsnap — System Backup & Recovery Manager\n");
-            println!("Verwendung: backsnap [OPTIONEN]\n");
+            println!("arclight — System Backup & Recovery Manager\n");
+            println!("Verwendung: arclight [OPTIONEN]\n");
             println!("Optionen:");
             println!("  --sync              Sync headless ausführen (für systemd/cron)");
-            println!("  --config <pfad>     Config-Pfad (Standard: ~/.config/backsnap/config.toml)");
+            println!(
+                "  --config <pfad>     Config-Pfad (Standard: ~/.config/arclight/config.toml)"
+            );
             println!("  --sysfs-write <json> Sysfs-Werte schreiben (JSON-Array, nur als root)");
             println!("  --verify-collect <json> Backup-Daten sammeln (nur als root)");
             println!("  --sync-elevated     Sync als root ausführen (intern, von GUI gestartet)");
             println!(
                 "  --rollback-elevated <id>  Rollback als root ausführen (intern, von GUI gestartet)"
             );
-            println!("  --rollback-recover    Rollback-Recovery Wizard (Rescue-CLI, root, interaktiv)");
+            println!(
+                "  --rollback-recover    Rollback-Recovery Wizard (Rescue-CLI, root, interaktiv)"
+            );
             println!("  --file-ops <json>   Dateioperationen als root (intern, von GUI gestartet)");
             println!("  --help, -h          Diese Hilfe anzeigen");
             println!("\nOhne Optionen wird die GUI gestartet.");

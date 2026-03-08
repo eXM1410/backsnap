@@ -82,10 +82,7 @@ pub fn find_dirs_by_name(
             }
         })
         .filter(|e| {
-            e.file_type().is_dir()
-                && e.file_name()
-                    .to_str()
-                    .is_some_and(|n| names.contains(&n))
+            e.file_type().is_dir() && e.file_name().to_str().is_some_and(|n| names.contains(&n))
         })
         .map(|e| e.path())
         .collect()

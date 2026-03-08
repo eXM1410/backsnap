@@ -41,7 +41,7 @@ pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
         .unwrap_or_else(|| PathBuf::from("/etc"))
-        .join("backsnap")
+        .join("arclight")
 }
 
 pub fn config_path() -> PathBuf {

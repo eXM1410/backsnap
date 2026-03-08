@@ -1,0 +1,6 @@
+# XPG SPECTRIX S40G / GAMMIX S41 / FALCON NVMe SSD — allow user RGB control.
+# The ENE RGB controller is accessed via NVMe admin passthrough (opcodes 0xFA/0xFB).
+# File permissions alone are not sufficient — the binary also needs CAP_SYS_ADMIN.
+KERNEL=="nvme[0-9]*", ATTR{model}=="XPG SPECTRIX S40G*", MODE="0666"
+KERNEL=="nvme[0-9]*", ATTR{model}=="XPG GAMMIX S41*", MODE="0666"
+KERNEL=="nvme[0-9]*", ATTR{model}=="XPG FALCON*", MODE="0666"

@@ -1,0 +1,57 @@
+post_install() {
+  echo "arclight installed."
+  echo ""
+  echo "  Binary:        /usr/bin/arclight"
+  echo "  Polkit:        /etc/polkit-1/rules.d/50-arclight.rules"
+  echo "  Pacman-Hook:   /etc/pacman.d/hooks/00-arclight-pre.hook"
+  echo "  Autostart:     /etc/xdg/autostart/arclight.desktop"
+  echo ""
+  echo "  Start from menu or run: arclight"
+  echo "  Timer über die App einrichten: Sync-Zeitplan → Installieren"
+
+  # Clean up stale /usr/local/bin binary from old install.sh
+  if [ -f /usr/local/bin/arclight ]; then
+    rm -f /usr/local/bin/arclight
+    echo "  Removed stale /usr/local/bin/arclight"
+  fi
+
+  # Clean up per-user autostart that pointed to /usr/local/bin
+  for home_dir in /home/*; do
+    old="$home_dir/.config/autostart/arclight.desktop"
+    if [ -f "$old" ] && grep -q "/usr/local/bin" "$old" 2>/dev/null; then
+      rm -f "$old"
+      echo "  Removed old autostart: $old (now handled by /etc/xdg/autostart/)"
+    fi
+  done
+
+  # NVMe admin passthrough needs CAP_SYS_ADMIN for XPG SPECTRIX S40G RGB control
+  if command -v setcap >/dev/null 2>&1; then
+    setcap cap_sys_admin+ep /usr/bin/arclight 2>/dev/null || true
+    echo "  CAP_SYS_ADMIN gesetzt (NVMe RGB)"
+  fi
+
+  # Reload udev rules for NVMe RGB access
+  udevadm control --reload-rules 2>/dev/null || true
+  udevadm trigger 2>/dev/null || true
+
+  gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+  update-desktop-database -q /usr/share/applications 2>/dev/null || true
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  echo "arclight removed."
+  echo "  Config preserved: ~/.config/arclight/config.toml"
+  echo "  Logs preserved:   /var/log/arclight-sync.log"
+
+  # Disable timer if running
+  systemctl disable --now arclight-sync.timer 2>/dev/null || true
+  systemctl stop arclight-sync.service 2>/dev/null || true
+  systemctl daemon-reload 2>/dev/null || true
+
+  gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+  update-desktop-database -q /usr/share/applications 2>/dev/null || true
+}

@@ -28,11 +28,11 @@ pub fn run_sysfs_write(json: &str) -> i32 {
         return 1;
     }
 
-    // Security: only allow writes to /sys/, /proc/sys/, /etc/backsnap/, /etc/environment, /etc/sysctl.d/
+    // Security: only allow writes to /sys/, /proc/sys/, /etc/arclight/, /etc/environment, /etc/sysctl.d/
     for w in &writes {
         let allowed = w.path.starts_with("/sys/")
             || w.path.starts_with("/proc/sys/")
-            || w.path.starts_with("/etc/backsnap/")
+            || w.path.starts_with("/etc/arclight/")
             || w.path == "/etc/environment"
             || w.path.starts_with("/etc/sysctl.d/");
         if !allowed {
@@ -59,8 +59,8 @@ pub fn run_sysfs_write(json: &str) -> i32 {
             }
         } else {
             // Ensure parent directory exists for config files
-            if w.path.starts_with("/etc/backsnap/") {
-                let _ = std::fs::create_dir_all("/etc/backsnap");
+            if w.path.starts_with("/etc/arclight/") {
+                let _ = std::fs::create_dir_all("/etc/arclight");
             }
             if w.path.starts_with("/etc/sysctl.d/") {
                 let _ = std::fs::create_dir_all("/etc/sysctl.d");
@@ -105,15 +105,15 @@ pub fn run_file_ops(json: &str) -> i32 {
         "/etc/systemd/system/",
         "/etc/polkit-1/",
         "/etc/pacman.d/",
-        "/etc/backsnap/",
+        "/etc/arclight/",
         "/etc/environment",
         "/etc/sysctl.d/",
         "/etc/udev/rules.d/",
-        "/usr/bin/backsnap",
-        "/usr/local/bin/backsnap",
-        "/usr/share/applications/backsnap",
+        "/usr/bin/arclight",
+        "/usr/local/bin/arclight",
+        "/usr/share/applications/arclight",
         "/usr/share/icons/hicolor/",
-        "/tmp/backsnap-",
+        "/tmp/arclight-",
         "/sys/",
         "/proc/sys/",
     ];
@@ -142,8 +142,7 @@ pub fn run_file_ops(json: &str) -> i32 {
                 if let Some(parent) = std::path::Path::new(path).parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                std::fs::write(path, content)
-                    .map_err(|e| format!("write {path}: {e}"))
+                std::fs::write(path, content).map_err(|e| format!("write {path}: {e}"))
             }
             FileOp::Copy { src, dst } => {
                 if let Some(parent) = std::path::Path::new(dst).parent() {
@@ -159,8 +158,7 @@ pub fn run_file_ops(json: &str) -> i32 {
                 Err(e) => Err(format!("delete {path}: {e}")),
             },
             FileOp::Mkdir { path } => {
-                std::fs::create_dir_all(path)
-                    .map_err(|e| format!("mkdir {path}: {e}"))
+                std::fs::create_dir_all(path).map_err(|e| format!("mkdir {path}: {e}"))
             }
             FileOp::Chmod { path, mode } => {
                 let perms = std::fs::Permissions::from_mode(*mode);

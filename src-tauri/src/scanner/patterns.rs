@@ -170,7 +170,8 @@ pub static KNOWN_PATTERNS: &[KnownPattern] = &[
         reason: "npm-Paket-Cache — npm install regeneriert alles",
         exclude_paths: &[".npm"],
     },
-    KnownPattern {        check_path: ".pnpm-store",
+    KnownPattern {
+        check_path: ".pnpm-store",
         category: ExcludeCategory::Cache,
         reason: "pnpm Content-Addressable Store",
         exclude_paths: &[".pnpm-store"],

@@ -48,7 +48,11 @@ pub(crate) fn detect_efi_arch() -> String {
         .arg("-m")
         .output()
         .ok()
-        .filter(|o| o.status.success()).map_or_else(|| "x86_64".to_string(), |o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        .filter(|o| o.status.success())
+        .map_or_else(
+            || "x86_64".to_string(),
+            |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        );
     match uname.as_str() {
         "aarch64" => "arm64".to_string(),
         "i686" => "i386".to_string(),
@@ -82,7 +86,9 @@ pub(crate) fn get_partition_uuid(dev: &str) -> String {
 /// 3. Removes the leftover xml/info dirs
 pub(super) fn cleanup_backup_snapshots(backup_mnt: &str, subvol_name: &str, log_path: &str) {
     let snapshots_dir = format!("{}/.snapshots", backup_mnt);
-    let Ok(entries) = fs::read_dir(&snapshots_dir) else { return };
+    let Ok(entries) = fs::read_dir(&snapshots_dir) else {
+        return;
+    };
 
     let mut deleted = 0u32;
     let mut errors = 0u32;

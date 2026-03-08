@@ -5,7 +5,9 @@ use std::fs;
 
 /// Swap all occurrences of `a` and `b` in `s` via a temporary placeholder.
 fn three_way_swap(s: &str, a: &str, b: &str) -> String {
-    if a.is_empty() || b.is_empty() || a == b { return s.to_string(); }
+    if a.is_empty() || b.is_empty() || a == b {
+        return s.to_string();
+    }
     const PH: &str = "___BACKSNAP_SWAP___";
     s.replace(a, PH).replace(b, a).replace(PH, b)
 }

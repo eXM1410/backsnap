@@ -29,7 +29,10 @@ pub fn device_uuid(dev: &str) -> Option<String> {
     for entry in dir.flatten() {
         if let Ok(target) = fs::canonicalize(entry.path()) {
             if target == dev_canon {
-                return entry.file_name().to_str().map(std::string::ToString::to_string);
+                return entry
+                    .file_name()
+                    .to_str()
+                    .map(std::string::ToString::to_string);
             }
         }
     }
@@ -49,7 +52,9 @@ pub fn uuid_exists(uuid: &str) -> bool {
 /// or if it is the filesystem root (`/`).
 pub fn is_mountpoint(path: &str) -> bool {
     let p = Path::new(path);
-    let Ok(meta) = fs::metadata(p) else { return false };
+    let Ok(meta) = fs::metadata(p) else {
+        return false;
+    };
     if !meta.is_dir() {
         return false;
     }
@@ -57,8 +62,12 @@ pub fn is_mountpoint(path: &str) -> bool {
     if p == Path::new("/") {
         return true;
     }
-    let Some(parent) = p.parent() else { return true };
-    let Ok(parent_meta) = fs::metadata(parent) else { return false };
+    let Some(parent) = p.parent() else {
+        return true;
+    };
+    let Ok(parent_meta) = fs::metadata(parent) else {
+        return false;
+    };
     meta.dev() != parent_meta.dev()
 }
 
@@ -89,7 +98,9 @@ pub struct MountInfo {
 ///                                              ^^^ separator
 /// ```
 fn parse_mountinfo() -> Vec<MountInfo> {
-    let Ok(data) = fs::read_to_string("/proc/self/mountinfo") else { return Vec::new() };
+    let Ok(data) = fs::read_to_string("/proc/self/mountinfo") else {
+        return Vec::new();
+    };
     parse_mountinfo_str(&data)
 }
 

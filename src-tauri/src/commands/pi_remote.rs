@@ -1,4 +1,4 @@
-//! Pi Remote — manage Raspberry Pi devices over SSH/NFS from within backsnap.
+//! Pi Remote — manage Raspberry Pi devices over SSH/NFS from within arclight.
 //!
 //! Pis are stored in the app config (`pi_remote.devices`). A setup wizard
 //! in the frontend lets users add/remove/edit devices. Status is gathered
@@ -8,9 +8,11 @@ use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::config::{invalidate_config_cache, load_config, save_config, PiDeviceConfig, RemoteProtocol};
-use crate::util::safe_cmd_timeout;
 use super::helpers::cmd_exists;
+use crate::config::{
+    invalidate_config_cache, load_config, save_config, PiDeviceConfig, RemoteProtocol,
+};
+use crate::util::safe_cmd_timeout;
 
 // ─── SSH Section Markers ──────────────────────────────────────
 // Keep the command builder and parser in sync via shared constants.
@@ -161,11 +163,16 @@ fn ssh_run(user: &str, ip: &str, key: &str, remote_cmd: &str, timeout: Duration)
 
     let child = Command::new("ssh")
         .args([
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "BatchMode=yes",
-            "-o", "PasswordAuthentication=no",
-            "-i", &key_path,
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "PasswordAuthentication=no",
+            "-i",
+            &key_path,
             &target,
             remote_cmd,
         ])
@@ -192,7 +199,14 @@ fn ssh_run(user: &str, ip: &str, key: &str, remote_cmd: &str, timeout: Duration)
                         if o.status.success() {
                             (true, stdout)
                         } else if !stderr.is_empty() {
-                            (false, format!("SSH error (exit {}): {}", o.status.code().unwrap_or(-1), stderr))
+                            (
+                                false,
+                                format!(
+                                    "SSH error (exit {}): {}",
+                                    o.status.code().unwrap_or(-1),
+                                    stderr
+                                ),
+                            )
                         } else if !stdout.is_empty() {
                             (false, stdout)
                         } else {
@@ -221,7 +235,11 @@ fn ssh_run(user: &str, ip: &str, key: &str, remote_cmd: &str, timeout: Duration)
 
 fn ssh_cmd(pi: &PiDeviceConfig, remote_cmd: &str, timeout: Duration) -> Option<String> {
     let (ok, out) = ssh_run(&pi.user, &pi.ip, &pi.ssh_key, remote_cmd, timeout);
-    if ok { Some(out) } else { None }
+    if ok {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 fn ssh_cmd_full(pi: &PiDeviceConfig, remote_cmd: &str, timeout: Duration) -> (bool, String) {
@@ -251,12 +269,27 @@ fn gather_pi_status(pi: &PiDeviceConfig) -> PiStatus {
 
     if !online {
         return PiStatus {
-            id: pi.id.clone(), label: pi.label.clone(), model: pi.model.clone(),
-            ip: pi.ip.clone(), online: false, uptime: None, cpu_temp: None,
-            cpu_usage: None, cpu_freq_mhz: None, mem_total_mb: None, mem_used_mb: None,
-            disk_total_gb: None, disk_used_gb: None, disk_percent: None,
-            hostname: None, kernel: None, throttled: None, nfs_mounted,
-            services: vec![], remote_protocol: pi.remote_protocol, remote_port: pi.remote_port,
+            id: pi.id.clone(),
+            label: pi.label.clone(),
+            model: pi.model.clone(),
+            ip: pi.ip.clone(),
+            online: false,
+            uptime: None,
+            cpu_temp: None,
+            cpu_usage: None,
+            cpu_freq_mhz: None,
+            mem_total_mb: None,
+            mem_used_mb: None,
+            disk_total_gb: None,
+            disk_used_gb: None,
+            disk_percent: None,
+            hostname: None,
+            kernel: None,
+            throttled: None,
+            nfs_mounted,
+            services: vec![],
+            remote_protocol: pi.remote_protocol,
+            remote_port: pi.remote_port,
         };
     }
 
@@ -310,7 +343,10 @@ fn gather_pi_status(pi: &PiDeviceConfig) -> PiStatus {
     let mut section = "";
     for line in batch.lines() {
         let l = line.trim();
-        if l.starts_with("---") && l.ends_with("---") { section = l; continue; }
+        if l.starts_with("---") && l.ends_with("---") {
+            section = l;
+            continue;
+        }
         match section {
             SEC_HOSTNAME => hostname = Some(l.to_string()),
             SEC_KERNEL => kernel = Some(l.to_string()),
@@ -331,9 +367,15 @@ fn gather_pi_status(pi: &PiDeviceConfig) -> PiStatus {
             SEC_DISK => {
                 let p: Vec<&str> = l.split_whitespace().collect();
                 if p.len() >= 5 {
-                    disk_total_gb = p.get(1).and_then(|v| v.trim_end_matches('G').parse::<f64>().ok());
-                    disk_used_gb = p.get(2).and_then(|v| v.trim_end_matches('G').parse::<f64>().ok());
-                    disk_percent = p.get(4).and_then(|v| v.trim_end_matches('%').parse::<u8>().ok());
+                    disk_total_gb = p
+                        .get(1)
+                        .and_then(|v| v.trim_end_matches('G').parse::<f64>().ok());
+                    disk_used_gb = p
+                        .get(2)
+                        .and_then(|v| v.trim_end_matches('G').parse::<f64>().ok());
+                    disk_percent = p
+                        .get(4)
+                        .and_then(|v| v.trim_end_matches('%').parse::<u8>().ok());
                 }
             }
             SEC_SERVICES => {
@@ -350,10 +392,14 @@ fn gather_pi_status(pi: &PiDeviceConfig) -> PiStatus {
                 cpu_freq_mhz = l.parse::<u64>().ok().map(|khz| khz / 1000);
             }
             SEC_CPU1 => {
-                if l.starts_with("cpu ") { cpu1_line = Some(l.to_string()); }
+                if l.starts_with("cpu ") {
+                    cpu1_line = Some(l.to_string());
+                }
             }
             SEC_CPU2 => {
-                if l.starts_with("cpu ") { cpu2_line = Some(l.to_string()); }
+                if l.starts_with("cpu ") {
+                    cpu2_line = Some(l.to_string());
+                }
             }
             _ => {}
         }
@@ -365,24 +411,50 @@ fn gather_pi_status(pi: &PiDeviceConfig) -> PiStatus {
     };
 
     PiStatus {
-        id: pi.id.clone(), label: pi.label.clone(), model: pi.model.clone(),
-        ip: pi.ip.clone(), online: true, uptime, cpu_temp, cpu_usage, cpu_freq_mhz,
-        mem_total_mb, mem_used_mb, disk_total_gb, disk_used_gb, disk_percent,
-        hostname, kernel, throttled, nfs_mounted, services,
-        remote_protocol: pi.remote_protocol, remote_port: pi.remote_port,
+        id: pi.id.clone(),
+        label: pi.label.clone(),
+        model: pi.model.clone(),
+        ip: pi.ip.clone(),
+        online: true,
+        uptime,
+        cpu_temp,
+        cpu_usage,
+        cpu_freq_mhz,
+        mem_total_mb,
+        mem_used_mb,
+        disk_total_gb,
+        disk_used_gb,
+        disk_percent,
+        hostname,
+        kernel,
+        throttled,
+        nfs_mounted,
+        services,
+        remote_protocol: pi.remote_protocol,
+        remote_port: pi.remote_port,
     }
 }
 
 fn calc_cpu_usage(l1: &str, l2: &str) -> Option<f64> {
     fn parse(line: &str) -> Option<(u64, u64)> {
-        let p: Vec<u64> = line.split_whitespace().skip(1).filter_map(|v| v.parse().ok()).collect();
-        if p.len() >= 4 { Some((p.iter().sum(), p[3])) } else { None }
+        let p: Vec<u64> = line
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|v| v.parse().ok())
+            .collect();
+        if p.len() >= 4 {
+            Some((p.iter().sum(), p[3]))
+        } else {
+            None
+        }
     }
     let (t1, i1) = parse(l1)?;
     let (t2, i2) = parse(l2)?;
     let dt = t2.saturating_sub(t1);
     let di = i2.saturating_sub(i1);
-    if dt == 0 { return None; }
+    if dt == 0 {
+        return None;
+    }
     #[allow(clippy::cast_precision_loss)]
     Some(((dt - di) as f64 / dt as f64) * 100.0)
 }
@@ -400,7 +472,11 @@ pub async fn get_pi_devices() -> Result<Vec<PiDevice>, String> {
 
 /// Test SSH connection during wizard setup (before device is saved).
 #[tauri::command]
-pub async fn test_pi_connection(ip: String, user: String, ssh_key: String) -> Result<PiTestResult, String> {
+pub async fn test_pi_connection(
+    ip: String,
+    user: String,
+    ssh_key: String,
+) -> Result<PiTestResult, String> {
     tokio::task::spawn_blocking(move || {
         let reachable = is_reachable(&ip);
         if !reachable {
@@ -436,7 +512,12 @@ pub async fn test_pi_connection(ip: String, user: String, ssh_key: String) -> Re
 #[tauri::command]
 pub async fn add_pi_device(device: PiDevice) -> Result<PiActionResult, String> {
     let mut config = load_config().map_err(|e| format!("Config laden: {}", e))?;
-    if let Some(existing) = config.pi_remote.devices.iter_mut().find(|d| d.id == device.id) {
+    if let Some(existing) = config
+        .pi_remote
+        .devices
+        .iter_mut()
+        .find(|d| d.id == device.id)
+    {
         existing.label = device.label;
         existing.model = device.model;
         existing.ip = device.ip;
@@ -449,16 +530,25 @@ pub async fn add_pi_device(device: PiDevice) -> Result<PiActionResult, String> {
         existing.watch_services = device.watch_services;
     } else {
         config.pi_remote.devices.push(PiDeviceConfig {
-            id: device.id.clone(), label: device.label, model: device.model,
-            ip: device.ip, user: device.user, ssh_key: device.ssh_key,
-            mount_point: device.mount_point, remote_protocol: device.remote_protocol,
-            remote_port: device.remote_port, rdp_password: device.rdp_password,
+            id: device.id.clone(),
+            label: device.label,
+            model: device.model,
+            ip: device.ip,
+            user: device.user,
+            ssh_key: device.ssh_key,
+            mount_point: device.mount_point,
+            remote_protocol: device.remote_protocol,
+            remote_port: device.remote_port,
+            rdp_password: device.rdp_password,
             watch_services: device.watch_services,
         });
     }
     save_config(&config).map_err(|e| format!("Speichern: {}", e))?;
     invalidate_config_cache();
-    Ok(PiActionResult { success: true, message: format!("Pi '{}' gespeichert", device.id) })
+    Ok(PiActionResult {
+        success: true,
+        message: format!("Pi '{}' gespeichert", device.id),
+    })
 }
 
 /// Remove a Pi device.
@@ -472,7 +562,10 @@ pub async fn remove_pi_device(id: String) -> Result<PiActionResult, String> {
     }
     save_config(&config).map_err(|e| format!("Speichern: {}", e))?;
     invalidate_config_cache();
-    Ok(PiActionResult { success: true, message: format!("Pi '{}' entfernt", id) })
+    Ok(PiActionResult {
+        success: true,
+        message: format!("Pi '{}' entfernt", id),
+    })
 }
 
 // ─── Status ───────────────────────────────────────────────────
@@ -480,8 +573,11 @@ pub async fn remove_pi_device(id: String) -> Result<PiActionResult, String> {
 #[tauri::command]
 pub async fn get_pi_status_all() -> Result<Vec<PiStatus>, String> {
     let pis = configured_pis();
-    if pis.is_empty() { return Ok(vec![]); }
-    let handles: Vec<_> = pis.into_iter()
+    if pis.is_empty() {
+        return Ok(vec![]);
+    }
+    let handles: Vec<_> = pis
+        .into_iter()
         .map(|pi| tokio::task::spawn_blocking(move || gather_pi_status(&pi)))
         .collect();
     let mut out = Vec::new();
@@ -498,7 +594,8 @@ pub async fn get_pi_status_all() -> Result<Vec<PiStatus>, String> {
 pub async fn get_pi_status(id: String) -> Result<PiStatus, String> {
     let pi = find_pi(&id)?;
     tokio::task::spawn_blocking(move || Ok(gather_pi_status(&pi)))
-        .await.map_err(|e| format!("Thread: {}", e))?
+        .await
+        .map_err(|e| format!("Thread: {}", e))?
 }
 
 // ─── Actions ──────────────────────────────────────────────────
@@ -508,8 +605,13 @@ pub async fn pi_reboot(id: String) -> Result<PiActionResult, String> {
     let pi = find_pi(&id)?;
     tokio::task::spawn_blocking(move || {
         let _ = ssh_cmd(&pi, "sudo reboot", Duration::from_secs(5));
-        Ok(PiActionResult { success: true, message: "Reboot ausgelöst".into() })
-    }).await.map_err(|e| format!("Thread: {}", e))?
+        Ok(PiActionResult {
+            success: true,
+            message: "Reboot ausgelöst".into(),
+        })
+    })
+    .await
+    .map_err(|e| format!("Thread: {}", e))?
 }
 
 #[tauri::command]
@@ -517,8 +619,13 @@ pub async fn pi_shutdown(id: String) -> Result<PiActionResult, String> {
     let pi = find_pi(&id)?;
     tokio::task::spawn_blocking(move || {
         let _ = ssh_cmd(&pi, "sudo shutdown -h now", Duration::from_secs(5));
-        Ok(PiActionResult { success: true, message: "Shutdown ausgelöst".into() })
-    }).await.map_err(|e| format!("Thread: {}", e))?
+        Ok(PiActionResult {
+            success: true,
+            message: "Shutdown ausgelöst".into(),
+        })
+    })
+    .await
+    .map_err(|e| format!("Thread: {}", e))?
 }
 
 #[tauri::command]
@@ -527,7 +634,9 @@ pub async fn pi_run_command(id: String, command: String) -> Result<PiActionResul
     tokio::task::spawn_blocking(move || {
         let (success, message) = ssh_cmd_full(&pi, &command, Duration::from_secs(15));
         Ok(PiActionResult { success, message })
-    }).await.map_err(|e| format!("Thread: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("Thread: {}", e))?
 }
 
 // ─── Remote Desktop ───────────────────────────────────────────
@@ -553,7 +662,9 @@ pub async fn open_pi_remote(id: String) -> Result<PiActionResult, String> {
             RemoteProtocol::Vnc => Ok(open_vnc(&ip, port, &password, &display, &wayland)),
             RemoteProtocol::Rdp => Ok(open_rdp(&ip, port, &user, &password, &display, &wayland)),
         }
-    }).await.map_err(|e| format!("Thread: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("Thread: {}", e))?
 }
 
 fn open_vnc(ip: &str, port: u16, _password: &str, display: &str, wayland: &str) -> PiActionResult {
@@ -566,7 +677,7 @@ fn open_vnc(ip: &str, port: u16, _password: &str, display: &str, wayland: &str) 
     // Prefer remmina — has proper client-side scaling (fit to window)
     if cmd_exists("remmina") {
         // Create a temporary .remmina connection file with scaling enabled
-        let tmp = format!("/tmp/backsnap-vnc-{}-{}.remmina", ip, port);
+        let tmp = format!("/tmp/arclight-vnc-{}-{}.remmina", ip, port);
         let content = format!(
             "[remmina]\n\
              name=Pi {ip}:{port}\n\
@@ -578,10 +689,12 @@ fn open_vnc(ip: &str, port: u16, _password: &str, display: &str, wayland: &str) 
              window_maximize=0\n\
              window_width=1024\n\
              window_height=768\n",
-            ip = ip, port = port,
+            ip = ip,
+            port = port,
         );
         let _ = std::fs::write(&tmp, &content);
-        match Command::new("remmina").args(["-c", &tmp])
+        match Command::new("remmina")
+            .args(["-c", &tmp])
             .env("DISPLAY", display)
             .env("WAYLAND_DISPLAY", wayland)
             .env("XDG_RUNTIME_DIR", &xdg)
@@ -589,8 +702,18 @@ fn open_vnc(ip: &str, port: u16, _password: &str, display: &str, wayland: &str) 
             .stdin(Stdio::null())
             .spawn()
         {
-            Ok(_) => return PiActionResult { success: true, message: format!("Remmina VNC → {}:{}", ip, port) },
-            Err(e) => return PiActionResult { success: false, message: format!("Remmina Fehler: {}", e) },
+            Ok(_) => {
+                return PiActionResult {
+                    success: true,
+                    message: format!("Remmina VNC → {}:{}", ip, port),
+                }
+            }
+            Err(e) => {
+                return PiActionResult {
+                    success: false,
+                    message: format!("Remmina Fehler: {}", e),
+                }
+            }
         }
     }
 
@@ -599,7 +722,11 @@ fn open_vnc(ip: &str, port: u16, _password: &str, display: &str, wayland: &str) 
         let target = format!("{}:{}", ip, port);
         match Command::new("vncviewer")
             .arg(&target)
-            .args(["-RemoteResize=0", "-FullscreenSystemKeys=0", "-AcceptClipboard=1"])
+            .args([
+                "-RemoteResize=0",
+                "-FullscreenSystemKeys=0",
+                "-AcceptClipboard=1",
+            ])
             .env("DISPLAY", display)
             .env("WAYLAND_DISPLAY", wayland)
             .env("XDG_RUNTIME_DIR", &xdg)
@@ -613,60 +740,134 @@ fn open_vnc(ip: &str, port: u16, _password: &str, display: &str, wayland: &str) 
                 std::thread::sleep(Duration::from_millis(500));
                 match child.try_wait() {
                     Ok(Some(status)) => {
-                        let stderr = child.stderr.take()
-                            .map(|mut e| { let mut s = String::new(); std::io::Read::read_to_string(&mut e, &mut s).ok(); s })
+                        let stderr = child
+                            .stderr
+                            .take()
+                            .map(|mut e| {
+                                let mut s = String::new();
+                                std::io::Read::read_to_string(&mut e, &mut s).ok();
+                                s
+                            })
                             .unwrap_or_default();
                         return PiActionResult {
                             success: false,
                             message: format!("vncviewer beendet ({}): {}", status, stderr.trim()),
                         };
                     }
-                    _ => return PiActionResult { success: true, message: format!("vncviewer → {}:{}", ip, port) },
+                    _ => {
+                        return PiActionResult {
+                            success: true,
+                            message: format!("vncviewer → {}:{}", ip, port),
+                        }
+                    }
                 }
             }
-            Err(e) => return PiActionResult { success: false, message: format!("vncviewer Fehler: {}", e) },
+            Err(e) => {
+                return PiActionResult {
+                    success: false,
+                    message: format!("vncviewer Fehler: {}", e),
+                }
+            }
         }
     }
 
     PiActionResult {
         success: false,
-        message: "Kein VNC-Client gefunden. Installiere: sudo pacman -S remmina libvncserver".into(),
+        message: "Kein VNC-Client gefunden. Installiere: sudo pacman -S remmina libvncserver"
+            .into(),
     }
 }
 
-fn open_rdp(ip: &str, port: u16, user: &str, password: &str, display: &str, wayland: &str) -> PiActionResult {
+fn open_rdp(
+    ip: &str,
+    port: u16,
+    user: &str,
+    password: &str,
+    display: &str,
+    wayland: &str,
+) -> PiActionResult {
     let target = format!("/v:{}:{}", ip, port);
     let mut base = vec![target];
-    if !user.is_empty() { base.push(format!("/u:{}", user)); }
-    if !password.is_empty() { base.push(format!("/p:{}", password)); }
+    if !user.is_empty() {
+        base.push(format!("/u:{}", user));
+    }
+    if !password.is_empty() {
+        base.push(format!("/p:{}", password));
+    }
 
     // Try xfreerdp3/xfreerdp with table-driven extra args
     let clients: &[(&str, &[&str])] = &[
-        ("xfreerdp3", &["/cert:ignore", "/size:1920x1080", "/smart-sizing", "/kbd:layout:German", "+auto-reconnect"]),
-        ("xfreerdp",  &["/cert-ignore", "/size:1920x1080", "/smart-sizing", "/kbd:German", "+auto-reconnect"]),
+        (
+            "xfreerdp3",
+            &[
+                "/cert:ignore",
+                "/size:1920x1080",
+                "/smart-sizing",
+                "/kbd:layout:German",
+                "+auto-reconnect",
+            ],
+        ),
+        (
+            "xfreerdp",
+            &[
+                "/cert-ignore",
+                "/size:1920x1080",
+                "/smart-sizing",
+                "/kbd:German",
+                "+auto-reconnect",
+            ],
+        ),
     ];
     for &(cmd, extra) in clients {
-        if !cmd_exists(cmd) { continue; }
+        if !cmd_exists(cmd) {
+            continue;
+        }
         let mut args: Vec<String> = base.clone();
         args.extend(extra.iter().map(|s| (*s).to_string()));
-        match Command::new(cmd).args(&args)
-            .env("DISPLAY", display).env("WAYLAND_DISPLAY", wayland)
-            .stdin(Stdio::null()).spawn()
+        match Command::new(cmd)
+            .args(&args)
+            .env("DISPLAY", display)
+            .env("WAYLAND_DISPLAY", wayland)
+            .stdin(Stdio::null())
+            .spawn()
         {
-            Ok(_)  => return PiActionResult { success: true,  message: format!("{} → {}:{}", cmd, ip, port) },
-            Err(e) => return PiActionResult { success: false, message: format!("{} Fehler: {}", cmd, e) },
+            Ok(_) => {
+                return PiActionResult {
+                    success: true,
+                    message: format!("{} → {}:{}", cmd, ip, port),
+                }
+            }
+            Err(e) => {
+                return PiActionResult {
+                    success: false,
+                    message: format!("{} Fehler: {}", cmd, e),
+                }
+            }
         }
     }
 
     // Fallback: remmina (different arg style)
     if cmd_exists("remmina") {
         let uri = format!("rdp://{}:{}", ip, port);
-        match Command::new("remmina").args(["-c", &uri])
-            .env("DISPLAY", display).env("WAYLAND_DISPLAY", wayland)
-            .stdin(Stdio::null()).spawn()
+        match Command::new("remmina")
+            .args(["-c", &uri])
+            .env("DISPLAY", display)
+            .env("WAYLAND_DISPLAY", wayland)
+            .stdin(Stdio::null())
+            .spawn()
         {
-            Ok(_)  => return PiActionResult { success: true,  message: format!("Remmina → {}:{}", ip, port) },
-            Err(e) => return PiActionResult { success: false, message: format!("Remmina Fehler: {}", e) },
+            Ok(_) => {
+                return PiActionResult {
+                    success: true,
+                    message: format!("Remmina → {}:{}", ip, port),
+                }
+            }
+            Err(e) => {
+                return PiActionResult {
+                    success: false,
+                    message: format!("Remmina Fehler: {}", e),
+                }
+            }
         }
     }
 
@@ -675,5 +876,3 @@ fn open_rdp(ip: &str, port: u16, user: &str, password: &str, display: &str, wayl
         message: "Kein RDP-Client gefunden. Installiere: sudo pacman -S freerdp".into(),
     }
 }
-
-

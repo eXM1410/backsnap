@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Arclight
+Comment=System Backup & Recovery Manager
+Exec=/usr/bin/arclight
+Icon=arclight
+Terminal=false
+Categories=System;Utility;
+StartupNotify=true
+X-GNOME-Autostart-enabled=true

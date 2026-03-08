@@ -9,9 +9,13 @@ import {
   ShieldCheck,
   ChevronDown,
   ChevronUp,
+  Clock,
+  Power,
+  Download,
+  Trash2,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { api, SyncStatus, SyncScope, CommandResult, BackupVerifyResult } from "../api";
+import { api, SyncStatus, SyncScope, CommandResult, BackupVerifyResult, TimerConfig } from "../api";
 import { Card, Button, Badge, PageHeader, Loading } from "../components/ui";
 
 interface ByteProgress {
@@ -49,16 +53,35 @@ export default function Sync() {
   const [scopeOpen, setScopeOpen] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
 
+  // Timer management state
+  const [timerConfig, setTimerConfig] = useState<TimerConfig | null>(null);
+  const [timerInstalled, setTimerInstalled] = useState<boolean | null>(null);
+  const [timerOpen, setTimerOpen] = useState(false);
+  const [toggling, setToggling] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [uninstalling, setUninstalling] = useState(false);
+  const [calendar, setCalendar] = useState("daily");
+  const [delay, setDelay] = useState("1h");
+  const [timerMsg, setTimerMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
   const refresh = async () => {
     try {
-      const [s, l, sc] = await Promise.all([
+      const [s, l, sc, tc] = await Promise.all([
         api.getSyncStatus(),
         api.getSyncLog(),
         api.getSyncScope(),
+        api.getTimerConfig().catch(() => null),
       ]);
       setStatus(s);
       setLogs(l);
       setScope(sc);
+      if (tc) {
+        setTimerConfig(tc);
+        const installed = tc.calendar !== "" && tc.calendar !== "n/a";
+        setTimerInstalled(installed);
+        if (tc.calendar && tc.calendar !== "n/a") setCalendar(tc.calendar);
+        if (tc.randomized_delay && tc.randomized_delay !== "0") setDelay(tc.randomized_delay);
+      }
       setError("");
     } catch (e) {
       console.error(e);
@@ -98,8 +121,8 @@ export default function Sync() {
   }, []);
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs]);
+    if (syncing) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs, syncing]);
 
   const handleSync = async () => {
     setSyncing(true);
@@ -138,6 +161,50 @@ export default function Sync() {
       });
     }
     setVerifying(false);
+  };
+
+  // Timer actions
+  const toggleTimer = async () => {
+    if (!timerConfig) return;
+    setToggling(true);
+    try {
+      const result = await api.setTimerEnabled(!timerConfig.enabled);
+      if (result.success) {
+        setTimerMsg({ text: timerConfig.enabled ? "Timer deaktiviert" : "Timer aktiviert", ok: true });
+      } else {
+        setTimerMsg({ text: result.stderr || result.stdout || "Fehlgeschlagen", ok: false });
+      }
+    } catch (e: any) {
+      setTimerMsg({ text: `Fehler: ${e}`, ok: false });
+    }
+    await refresh();
+    setToggling(false);
+  };
+
+  const handleInstallTimer = async () => {
+    setInstalling(true);
+    setTimerMsg(null);
+    try {
+      const result = await api.installTimer(calendar, delay);
+      setTimerMsg({ text: result.stdout, ok: result.success });
+      await refresh();
+    } catch (e: any) {
+      setTimerMsg({ text: `Fehler: ${e}`, ok: false });
+    }
+    setInstalling(false);
+  };
+
+  const handleUninstallTimer = async () => {
+    setUninstalling(true);
+    setTimerMsg(null);
+    try {
+      const result = await api.uninstallTimer();
+      setTimerMsg({ text: result.stdout, ok: result.success });
+      await refresh();
+    } catch (e: any) {
+      setTimerMsg({ text: `Fehler: ${e}`, ok: false });
+    }
+    setUninstalling(false);
   };
 
   if (loading) return <div className="p-8"><Loading /></div>;
@@ -351,6 +418,114 @@ export default function Sync() {
           )}
         </Card>
       )}
+
+      {/* Sync-Zeitplan (Timer Management) */}
+      <Card className={`mb-4 border ${timerConfig?.enabled ? "border-emerald-500/20" : "border-zinc-700"}`}>
+        <button
+          className="w-full flex items-center gap-2 text-left"
+          onClick={() => setTimerOpen((o) => !o)}
+        >
+          <Clock className={`w-5 h-5 ${timerConfig?.enabled ? "text-emerald-400" : "text-zinc-500"}`} />
+          <span className="font-semibold flex-1">Sync-Zeitplan</span>
+          <span className="text-xs text-zinc-500">
+            {timerConfig?.enabled
+              ? `${timerConfig.calendar || "daily"}`
+              : timerInstalled
+                ? "Deaktiviert"
+                : "Nicht installiert"}
+          </span>
+          {timerConfig?.enabled && (
+            <Badge color="green">Aktiv</Badge>
+          )}
+          {timerOpen ? (
+            <ChevronUp className="w-4 h-4 text-zinc-500" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-zinc-500" />
+          )}
+        </button>
+
+        {timerOpen && (
+          <div className="mt-4 space-y-4">
+            {/* Timer message */}
+            {timerMsg && (
+              <div className={`p-2.5 rounded-lg text-xs font-mono whitespace-pre-wrap ${
+                timerMsg.ok
+                  ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                  : "bg-red-500/10 text-red-400 border border-red-500/20"
+              }`}>
+                {timerMsg.text}
+              </div>
+            )}
+
+            {/* Install / Config */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1 block">Intervall (OnCalendar)</label>
+                  <input
+                    type="text"
+                    value={calendar}
+                    onChange={(e) => setCalendar(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-cyan-500"
+                    placeholder="daily, weekly, *-*-* 01:00:00"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1 block">Zufällige Verzögerung</label>
+                  <input
+                    type="text"
+                    value={delay}
+                    onChange={(e) => setDelay(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-cyan-500"
+                    placeholder="1h, 30min, 0"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={handleInstallTimer} loading={installing}>
+                    <Download className="w-3.5 h-3.5" />
+                    {timerInstalled ? "Aktualisieren" : "Installieren"}
+                  </Button>
+                  {timerInstalled && (
+                    <>
+                      <Button size="sm" variant={timerConfig?.enabled ? "danger" : "primary"} onClick={toggleTimer} loading={toggling}>
+                        <Power className="w-3.5 h-3.5" />
+                        {timerConfig?.enabled ? "Deaktivieren" : "Aktivieren"}
+                      </Button>
+                      <Button size="sm" variant="danger" onClick={handleUninstallTimer} loading={uninstalling}>
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Timer details */}
+              {timerInstalled && timerConfig && (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between bg-zinc-900/60 rounded-lg px-3 py-2">
+                    <span className="text-xs text-zinc-500">Intervall</span>
+                    <span className="text-xs font-mono text-zinc-300">{timerConfig.calendar || "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between bg-zinc-900/60 rounded-lg px-3 py-2">
+                    <span className="text-xs text-zinc-500">Verzögerung</span>
+                    <span className="text-xs font-mono text-zinc-300">{timerConfig.randomized_delay || "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between bg-zinc-900/60 rounded-lg px-3 py-2">
+                    <span className="text-xs text-zinc-500">Letzter Trigger</span>
+                    <span className="text-xs font-mono text-zinc-300">{timerConfig.last_trigger || "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between bg-zinc-900/60 rounded-lg px-3 py-2">
+                    <span className="text-xs text-zinc-500">Ergebnis</span>
+                    <Badge color={timerConfig.service_result === "success" ? "green" : timerConfig.service_result ? "red" : "zinc"}>
+                      {timerConfig.service_result || "—"}
+                    </Badge>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </Card>
 
       {/* Verify Result */}
       {(verifyOpen || verifyResult) && (

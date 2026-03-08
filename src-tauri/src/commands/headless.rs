@@ -11,7 +11,7 @@ pub fn run_sync_headless(config_path_override: Option<String>) -> i32 {
         match config::load_config_from(std::path::Path::new(&path)) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("backsnap: Config-Fehler: {}", e);
+                eprintln!("arclight: Config-Fehler: {}", e);
                 return 1;
             }
         }
@@ -20,7 +20,7 @@ pub fn run_sync_headless(config_path_override: Option<String>) -> i32 {
     };
 
     if let Err(e) = validate_sync_config(&c) {
-        eprintln!("backsnap: Config-Validierung fehlgeschlagen: {}", e);
+        eprintln!("arclight: Config-Validierung fehlgeschlagen: {}", e);
         return 1;
     }
 
@@ -31,7 +31,7 @@ pub fn run_sync_headless(config_path_override: Option<String>) -> i32 {
     let _lock = match SyncLock::acquire() {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("backsnap: {}", e);
+            eprintln!("arclight: {}", e);
             sync_log(&c.sync.log_path, &format!("CLI FEHLER: {}", e));
             return 1;
         }
@@ -40,7 +40,7 @@ pub fn run_sync_headless(config_path_override: Option<String>) -> i32 {
     match sync_core(&c, &SyncMode::Headless) {
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("backsnap: FEHLER: {}", e);
+            eprintln!("arclight: FEHLER: {}", e);
             sync_log(&c.sync.log_path, &format!("CLI FEHLER: {}", e));
             1
         }

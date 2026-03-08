@@ -35,7 +35,11 @@ fn verify_backup_internal() -> Result<super::helpers::BackupVerifyResult, String
         .sync
         .subvolumes
         .iter()
-        .find(|sv| sv.source == "/").map_or_else(|| "@".to_string(), |sv| sv.subvol.trim_start_matches('/').to_string());
+        .find(|sv| sv.source == "/")
+        .map_or_else(
+            || "@".to_string(),
+            |sv| sv.subvol.trim_start_matches('/').to_string(),
+        );
 
     // ── Single pkexec call: native Rust --verify-collect ──
     let args_json = serde_json::json!({
@@ -44,7 +48,10 @@ fn verify_backup_internal() -> Result<super::helpers::BackupVerifyResult, String
         "root_subvol": root_subvol,
     });
 
-    let exe = std::env::current_exe().map_or_else(|_| "backsnap".to_string(), |p| p.to_string_lossy().into_owned());
+    let exe = std::env::current_exe().map_or_else(
+        |_| "arclight".to_string(),
+        |p| p.to_string_lossy().into_owned(),
+    );
 
     let result = if is_root() {
         run_cmd(&exe, &["--verify-collect", &args_json.to_string()])
@@ -73,7 +80,16 @@ fn verify_backup_internal() -> Result<super::helpers::BackupVerifyResult, String
     // ── Check 1: fstab UUID ──
     let fstab_check = match &collected.fstab {
         VerifyFstab::Content { data: content } => {
-            const CRITICAL: &[&str] = &["/", "/home", "/boot", "/root", "/srv", "/var/cache", "/var/tmp", "/var/log"];
+            const CRITICAL: &[&str] = &[
+                "/",
+                "/home",
+                "/boot",
+                "/root",
+                "/srv",
+                "/var/cache",
+                "/var/tmp",
+                "/var/log",
+            ];
 
             let mut root_has_backup = false;
             let mut root_has_primary = false;
@@ -83,9 +99,15 @@ fn verify_backup_internal() -> Result<super::helpers::BackupVerifyResult, String
                 if trimmed.starts_with('#') || trimmed.is_empty() {
                     continue;
                 }
-                let Some(mp) = trimmed.split_whitespace().nth(1) else { continue };
+                let Some(mp) = trimmed.split_whitespace().nth(1) else {
+                    continue;
+                };
                 let normalized = mp.trim_end_matches('/');
-                let normalized = if normalized.is_empty() { "/" } else { normalized };
+                let normalized = if normalized.is_empty() {
+                    "/"
+                } else {
+                    normalized
+                };
                 if !CRITICAL.contains(&normalized) {
                     continue;
                 }
@@ -231,7 +253,7 @@ fn mount_read_umount<T>(
     }
 }
 
-/// Called via `pkexec backsnap --verify-collect <json>`.
+/// Called via `pkexec arclight --verify-collect <json>`.
 /// Runs as root: mounts, reads, unmounts. Outputs JSON to stdout.
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run_verify_collect(json: &str) -> i32 {
@@ -244,7 +266,9 @@ pub fn run_verify_collect(json: &str) -> i32 {
     };
 
     let fstab = match mount_read_umount(
-        &args.backup_dev, "subvolid=5,ro", "/tmp/backsnap-verify",
+        &args.backup_dev,
+        "subvolid=5,ro",
+        "/tmp/arclight-verify",
         |mnt| {
             let path = format!("{}/{}/etc/fstab", mnt, args.root_subvol);
             fs::read_to_string(&path).map_err(|e| format!("fstab nicht lesbar: {}", e))
@@ -255,26 +279,25 @@ pub fn run_verify_collect(json: &str) -> i32 {
     };
 
     let efi_entries = if args.efi_dev.is_empty() {
-        VerifyEfi::Error { msg: "Konnte EFI-Partition nicht ermitteln".to_string() }
+        VerifyEfi::Error {
+            msg: "Konnte EFI-Partition nicht ermitteln".to_string(),
+        }
     } else {
-        match mount_read_umount(
-            &args.efi_dev, "ro", "/tmp/backsnap-verify-efi",
-            |mnt| {
-                let entries_dir = format!("{}/loader/entries", mnt);
-                let mut all = String::new();
-                if let Ok(rd) = fs::read_dir(&entries_dir) {
-                    for entry in rd.flatten() {
-                        if entry.path().extension().is_some_and(|x| x == "conf") {
-                            if let Ok(content) = fs::read_to_string(entry.path()) {
-                                all.push_str(&content);
-                                all.push('\n');
-                            }
+        match mount_read_umount(&args.efi_dev, "ro", "/tmp/arclight-verify-efi", |mnt| {
+            let entries_dir = format!("{}/loader/entries", mnt);
+            let mut all = String::new();
+            if let Ok(rd) = fs::read_dir(&entries_dir) {
+                for entry in rd.flatten() {
+                    if entry.path().extension().is_some_and(|x| x == "conf") {
+                        if let Ok(content) = fs::read_to_string(entry.path()) {
+                            all.push_str(&content);
+                            all.push('\n');
                         }
                     }
                 }
-                Ok(all)
-            },
-        ) {
+            }
+            Ok(all)
+        }) {
             Ok(content) => VerifyEfi::Content { data: content },
             Err(msg) => VerifyEfi::Error { msg },
         }

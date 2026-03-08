@@ -1,14 +1,14 @@
 # Maintainer: Max
 
-pkgname=backsnap-bin
+pkgname=arclight-bin
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Btrfs snapshot management & NVMe-to-NVMe backup GUI (Tauri + Rust)"
 arch=("x86_64")
-url="https://example.invalid/backsnap"
+url="https://example.invalid/arclight"
 license=("MIT")
-provides=("backsnap")
-conflicts=("backsnap")
+provides=("arclight")
+conflicts=("arclight")
 depends=(
   "glibc"
   "gtk3"
@@ -16,47 +16,55 @@ depends=(
   "libayatana-appindicator"
   "jq"
 )
-install="backsnap-bin.install"
+install="arclight-bin.install"
 
 # This PKGBUILD is intended for local builds using build-local.sh.
 # It packages a prebuilt binary plus desktop entry, icons, polkit rule,
 # pacman hook, and autostart entry.
 source=(
-  "backsnap"
-  "backsnap.desktop"
-  "backsnap-autostart.desktop"
+  "arclight"
+  "arclight.desktop"
+  "arclight-autostart.desktop"
   "32x32.png"
   "128x128.png"
-  "50-backsnap.rules"
-  "00-backsnap-pre.hook"
-  "backsnap-pacman-pre.sh"
-  "00-backsnap-boot-guard.hook"
-  "backsnap-boot-guard.sh"
+  "50-arclight.rules"
+  "99-arclight-nvme-rgb.rules"
+  "99-arclight-corsair.rules"
+  "00-arclight-pre.hook"
+  "arclight-pacman-pre.sh"
+  "00-arclight-boot-guard.hook"
+  "arclight-boot-guard.sh"
 )
-sha256sums=("SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP")
+sha256sums=("SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP" "SKIP")
 
 package() {
   # Binary
-  install -Dm755 "${srcdir}/backsnap" "${pkgdir}/usr/bin/backsnap"
+  install -Dm755 "${srcdir}/arclight" "${pkgdir}/usr/bin/arclight"
 
   # Desktop entry + icons
-  install -Dm644 "${srcdir}/backsnap.desktop" "${pkgdir}/usr/share/applications/backsnap.desktop"
-  install -Dm644 "${srcdir}/32x32.png" "${pkgdir}/usr/share/icons/hicolor/32x32/apps/backsnap.png"
-  install -Dm644 "${srcdir}/128x128.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/backsnap.png"
+  install -Dm644 "${srcdir}/arclight.desktop" "${pkgdir}/usr/share/applications/arclight.desktop"
+  install -Dm644 "${srcdir}/32x32.png" "${pkgdir}/usr/share/icons/hicolor/32x32/apps/arclight.png"
+  install -Dm644 "${srcdir}/128x128.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/arclight.png"
 
   # Polkit rule (passwordless for wheel group)
-  install -Dm644 "${srcdir}/50-backsnap.rules" "${pkgdir}/etc/polkit-1/rules.d/50-backsnap.rules"
+  install -Dm644 "${srcdir}/50-arclight.rules" "${pkgdir}/etc/polkit-1/rules.d/50-arclight.rules"
+
+  # udev rule — XPG NVMe SSD RGB access for non-root
+  install -Dm644 "${srcdir}/99-arclight-nvme-rgb.rules" "${pkgdir}/etc/udev/rules.d/99-arclight-nvme-rgb.rules"
+
+  # udev rule — Corsair HID devices (Commander Core XT, iCUE NEXUS, etc.)
+  install -Dm644 "${srcdir}/99-arclight-corsair.rules" "${pkgdir}/etc/udev/rules.d/99-arclight-corsair.rules"
 
   # Pacman hook (pre-update snapshot)
-  install -Dm644 "${srcdir}/00-backsnap-pre.hook" "${pkgdir}/etc/pacman.d/hooks/00-backsnap-pre.hook"
+  install -Dm644 "${srcdir}/00-arclight-pre.hook" "${pkgdir}/etc/pacman.d/hooks/00-arclight-pre.hook"
 
   # Pacman hook wrapper (skip when snap-pac exists)
-  install -Dm755 "${srcdir}/backsnap-pacman-pre.sh" "${pkgdir}/usr/lib/backsnap/backsnap-pacman-pre"
+  install -Dm755 "${srcdir}/arclight-pacman-pre.sh" "${pkgdir}/usr/lib/arclight/arclight-pacman-pre"
 
   # Boot Guard pacman hook (backup boot entries before kernel updates)
-  install -Dm644 "${srcdir}/00-backsnap-boot-guard.hook" "${pkgdir}/etc/pacman.d/hooks/00-backsnap-boot-guard.hook"
-  install -Dm755 "${srcdir}/backsnap-boot-guard.sh" "${pkgdir}/usr/lib/backsnap/backsnap-boot-guard"
+  install -Dm644 "${srcdir}/00-arclight-boot-guard.hook" "${pkgdir}/etc/pacman.d/hooks/00-arclight-boot-guard.hook"
+  install -Dm755 "${srcdir}/arclight-boot-guard.sh" "${pkgdir}/usr/lib/arclight/arclight-boot-guard"
 
   # Autostart entry (per-user, placed in /etc/xdg/autostart for all users)
-  install -Dm644 "${srcdir}/backsnap-autostart.desktop" "${pkgdir}/etc/xdg/autostart/backsnap.desktop"
+  install -Dm644 "${srcdir}/arclight-autostart.desktop" "${pkgdir}/etc/xdg/autostart/arclight.desktop"
 }
