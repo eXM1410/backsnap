@@ -57,6 +57,10 @@ fn parse_segment(segment: &str, inherited_scope: Option<Scope>) -> Option<Parsed
         return Some(parsed);
     }
 
+    if let Some(parsed) = parse_screen_brightness(segment) {
+        return Some(parsed);
+    }
+
     if let Some(parsed) = parse_watering(segment) {
         return Some(parsed);
     }
@@ -98,6 +102,94 @@ fn parse_segment(segment: &str, inherited_scope: Option<Scope>) -> Option<Parsed
             actions,
         })
     }
+}
+
+/// Fast-parse screen/monitor brightness commands.
+fn parse_screen_brightness(segment: &str) -> Option<ParsedSegment> {
+    let is_screen = contains_any(
+        segment,
+        &[
+            "bildschirm",
+            "monitor",
+            "screen",
+            "display",
+            "bildschirmhelligkeit",
+            "monitorhelligkeit",
+        ],
+    );
+    if !is_screen {
+        return None;
+    }
+
+    // "Bildschirm aus" / "Monitor aus"
+    if contains_any(segment, &["aus", "off", "schwarz"]) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Turning screens off.".into(),
+            actions: vec![KeywordAction {
+                action: "screen_brightness".into(),
+                params: serde_json::json!({"percent": 0}),
+            }],
+        });
+    }
+
+    // "Bildschirm an" / "Monitor voll" / "volle Helligkeit"
+    if contains_any(segment, &["an", "on", "voll", "maximum", "max"]) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Setting screens to full brightness.".into(),
+            actions: vec![KeywordAction {
+                action: "screen_brightness".into(),
+                params: serde_json::json!({"percent": 100}),
+            }],
+        });
+    }
+
+    // "Bildschirm heller" / "Monitor heller"
+    if contains_any(segment, &["heller", "brighter"]) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Increasing screen brightness.".into(),
+            actions: vec![KeywordAction {
+                action: "screen_brightness".into(),
+                params: serde_json::json!({"percent": 80}),
+            }],
+        });
+    }
+
+    // "Bildschirm dunkler" / "Monitor dunkler" / "dimmen"
+    if contains_any(segment, &["dunkler", "dimmen", "dimmer", "darker"]) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Dimming screens.".into(),
+            actions: vec![KeywordAction {
+                action: "screen_brightness".into(),
+                params: serde_json::json!({"percent": 30}),
+            }],
+        });
+    }
+
+    // "Bildschirm auf 50 Prozent"
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    for word in &words {
+        let cleaned = word
+            .trim_matches(|ch: char| !ch.is_ascii_digit())
+            .trim_end_matches("prozent");
+        if let Ok(value) = cleaned.parse::<u16>() {
+            if value <= 100 {
+                return Some(ParsedSegment {
+                    scope: None,
+                    reply: format!("Setting screen brightness to {value} percent."),
+                    actions: vec![KeywordAction {
+                        action: "screen_brightness".into(),
+                        params: serde_json::json!({"percent": value}),
+                    }],
+                });
+            }
+        }
+    }
+
+    None
 }
 
 /// Fast-parse common query commands so they bypass the LLM entirely.

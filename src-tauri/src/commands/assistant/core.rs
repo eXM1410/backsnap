@@ -83,6 +83,7 @@ Climate & Plants:
 System:
 - snapshot_create: Create a BTRFS system snapshot (safe, non-destructive). Params: {"description": "reason for snapshot"}
 - music_stop: Stop all audio/music playback. Params: {}
+- screen_brightness: Set monitor brightness on all screens (DDC/CI). Params: {"percent": 0-100}
 
 Raspberry Pi:
 - pi_reboot: Reboot a Raspberry Pi. Params: {"target": "pi4" or "pi5"}
@@ -138,6 +139,9 @@ User: "Gieß die Pflanze"
 
 User: "Lüfter auf 80%"
 → {"reply": "Setting all fans to 80 percent.", "actions": [{"action":"fan_speed","params":{"percent":80}}]}
+
+User: "Bildschirm auf 50 Prozent"
+→ {"reply": "Setting screen brightness to 50 percent.", "actions": [{"action":"screen_brightness","params":{"percent":50}}]}
 
 User: "RGB auf Pulseffekt"
 → {"reply": "Pulse mode activated across all RGB devices.", "actions": [{"action":"rgb_mode","params":{"mode":"pulse"}}]}
@@ -606,6 +610,38 @@ fn execute_tool(call: &ToolCall) -> ActionResult {
                 action,
                 success: true,
                 message: "Audio playback stopped".into(),
+            }
+        }
+        "screen_brightness" => {
+            let percent = call.params["percent"].as_u64().unwrap_or(50) as u8;
+            let percent = percent.min(100);
+            let mut ok = true;
+            let mut errors = Vec::new();
+            // Set brightness on all DDC-capable monitors
+            for display in 1..=2 {
+                let result = std::process::Command::new("ddcutil")
+                    .args(["setvcp", "10", &percent.to_string(), "--display", &display.to_string()])
+                    .output();
+                match result {
+                    Ok(out) if out.status.success() => {}
+                    Ok(out) => {
+                        ok = false;
+                        errors.push(format!("Display {display}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+                    }
+                    Err(e) => {
+                        ok = false;
+                        errors.push(format!("Display {display}: {e}"));
+                    }
+                }
+            }
+            ActionResult {
+                action,
+                success: ok,
+                message: if ok {
+                    format!("Screen brightness set to {percent}%.")
+                } else {
+                    format!("Partial failure: {}", errors.join("; "))
+                },
             }
         }
         "system_info" => match block_on_async(tuning::get_gpu_oc_status()) {
