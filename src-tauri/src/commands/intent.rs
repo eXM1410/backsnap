@@ -57,6 +57,10 @@ fn parse_segment(segment: &str, inherited_scope: Option<Scope>) -> Option<Parsed
         return Some(parsed);
     }
 
+    if let Some(parsed) = parse_fan(segment) {
+        return Some(parsed);
+    }
+
     let scope = detect_scope(segment).or(inherited_scope);
     let mut actions = Vec::new();
     let mut reply_parts = Vec::new();
@@ -137,6 +141,84 @@ fn parse_watering(segment: &str) -> Option<ParsedSegment> {
                 params: serde_json::json!({"seconds": 20}),
             }],
         });
+    }
+
+    None
+}
+
+fn parse_fan(segment: &str) -> Option<ParsedSegment> {
+    let is_fan = contains_any(
+        segment,
+        &[
+            "luefter",
+            "luefter",
+            "fan",
+            "fans",
+            "geblase",
+            "geblaese",
+            "ventilator",
+        ],
+    );
+    if !is_fan {
+        return None;
+    }
+
+    // "Lüfter auto" / "Lüfter automatisch" / "Lüfter zurücksetzen"
+    if contains_any(
+        segment,
+        &["auto", "automatisch", "zuruecksetzen", "normal", "reset", "kurve"],
+    ) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Returning fans to automatic curve, Sir.".into(),
+            actions: vec![KeywordAction {
+                action: "fan_speed".into(),
+                params: serde_json::json!({"percent": "auto"}),
+            }],
+        });
+    }
+
+    // "Lüfter auf 80 Prozent" / "Lüfter 50" / "Fans auf maximum"
+    if contains_any(segment, &["maximum", "max", "voll"]) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Setting all fans to maximum, Sir.".into(),
+            actions: vec![KeywordAction {
+                action: "fan_speed".into(),
+                params: serde_json::json!({"percent": 100}),
+            }],
+        });
+    }
+
+    if contains_any(segment, &["minimum", "min", "leise", "silent", "quiet"]) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Setting fans to minimum speed.".into(),
+            actions: vec![KeywordAction {
+                action: "fan_speed".into(),
+                params: serde_json::json!({"percent": 20}),
+            }],
+        });
+    }
+
+    // Extract numeric percent value
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    for word in &words {
+        let cleaned = word
+            .trim_matches(|ch: char| !ch.is_ascii_digit())
+            .trim_end_matches("prozent");
+        if let Ok(value) = cleaned.parse::<u16>() {
+            if value > 0 && value <= 100 {
+                return Some(ParsedSegment {
+                    scope: None,
+                    reply: format!("Setting all fans to {value} percent, Sir."),
+                    actions: vec![KeywordAction {
+                        action: "fan_speed".into(),
+                        params: serde_json::json!({"percent": value}),
+                    }],
+                });
+            }
+        }
     }
 
     None
@@ -366,6 +448,14 @@ fn detect_govee_lamp(input: &str) -> Option<&'static str> {
 }
 
 fn extract_brightness(input: &str) -> Option<u8> {
+    // Don't match brightness for fan-related commands
+    if contains_any(
+        input,
+        &["luefter", "fan", "fans", "geblase", "geblaese", "ventilator"],
+    ) {
+        return None;
+    }
+
     let words: Vec<&str> = input.split_whitespace().collect();
     for (index, word) in words.iter().enumerate() {
         let cleaned = word
