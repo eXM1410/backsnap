@@ -262,6 +262,15 @@ export interface IntegrationStatus {
   binary_path: string;
 }
 
+export interface DesktopApp {
+  id: string;
+  name: string;
+  exec: string;
+  icon: string | null;
+  iconPath: string | null;
+  terminal: boolean;
+}
+
 // ─── Tuning Types ──────────────────────────────────────
 
 export interface TweakInfo {
@@ -895,6 +904,10 @@ export const api = {
     invoke<[boolean, string]>("rgb_master_power", { power }),
   rgbMasterBrightness: (brightness: number) =>
     invoke<[boolean, string]>("rgb_master_brightness", { brightness }),
+  listDesktopApps: () =>
+    invoke<DesktopApp[]>("list_desktop_apps"),
+  launchDesktopApp: (appId: string) =>
+    invoke<string>("launch_desktop_app", { appId }),
 
   // ── Assistant ──
   assistantChat: (history: { role: string; content: string }[]) =>

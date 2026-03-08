@@ -167,7 +167,7 @@ export default function SystemMonitor() {
   const totalPower = extra_power.total_system_watts ?? ((cpu_sensor.power_watts || 0) + (gpu.power_watts || 0) + (extra_power.dram_watts || 0));
 
   return (
-    <div className="p-8">
+    <div className="p-8 max-w-5xl mx-auto">
       <PageHeader
         title="System Monitor"
         description={`${cpu.model.replace(/\(TM\)|\(R\)/g, "")} — Uptime: ${uptime.formatted}`}

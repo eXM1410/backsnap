@@ -13,7 +13,7 @@ use super::super::pi_tent;
 use super::super::timer;
 use super::super::tuning;
 use super::audio::stop_music_playback;
-use super::{ActionResult, AssistantResponse, ChatMessage};
+use super::{ActionResult, AssistantResponse, ChatMessage, KeywordAction};
 use reqwest::blocking::Client;
 
 const LLAMA_URL: &str = "http://localhost:8080/v1/chat/completions";
@@ -85,6 +85,14 @@ System:
 - music_stop: Stop all audio/music playback. Params: {}
 - screen_brightness: Set monitor brightness on all screens (DDC/CI). Params: {"percent": 0-100}
 
+Desktop Management:
+- launch_app: Launch an application. Params: {"app": "firefox"|"steam"|"code"|"terminal"|"thunar"|"spotify"|"discord"|"obsidian"|"gimp"|"vlc"|"lutris" or any executable name}
+- screenshot: Take a fullscreen screenshot, saved to ~/Pictures. Params: {}
+- lock_screen: Lock the screen immediately. Params: {}
+- system_power: Shutdown, reboot, or suspend the system. Params: {"mode": "shutdown"|"reboot"|"suspend"}
+- audio_output: Switch default audio output device. Params: {"device": "headset"|"speakers"|"hdmi" etc.}
+- volume: Set system audio volume. Params: {"percent": 0-150}
+
 Raspberry Pi:
 - pi_reboot: Reboot a Raspberry Pi. Params: {"target": "pi4" or "pi5"}
 
@@ -131,6 +139,9 @@ User: "Alles rot"
 User: "Alles lila"
 → {"reply": "Purple, across the full lighting grid.", "actions": [{"action":"light_purple","params":{}}]}
 
+User: "Alle Lichter orange"
+→ {"reply": "Orange, applied across the lighting grid.", "actions": [{"action":"light_color","params":{"r":255,"g":140,"b":0}}]}
+
 User: "Licht aus, PC RGB rot und auf 30%"
 → {"reply": "Lights off, RGB set to red at 30 percent. Done.", "actions": [{"action":"govee_power","params":{"power":false}},{"action":"rgb_color","params":{"r":255,"g":0,"b":0}},{"action":"rgb_brightness","params":{"brightness":30}}]}
 
@@ -165,7 +176,22 @@ User: "Wie geht's dir?"
 → {"reply": "All systems nominal, Sir. How may I assist you?", "actions": []}
 
 User: "Was ist die Hauptstadt von Frankreich?"
-→ {"reply": "Paris, Sir.", "actions": []}"#;
+→ {"reply": "Paris, Sir.", "actions": []}
+
+User: "Öffne Firefox"
+→ {"reply": "Opening Firefox.", "actions": [{"action":"launch_app","params":{"app":"firefox"}}]}
+
+User: "Mach einen Screenshot"
+→ {"reply": "Screenshot taken.", "actions": [{"action":"screenshot","params":{}}]}
+
+User: "Sperre den Bildschirm"
+→ {"reply": "Locking screen now.", "actions": [{"action":"lock_screen","params":{}}]}
+
+User: "Fahr den PC runter"
+→ {"reply": "Shutting down. Goodnight, Sir.", "actions": [{"action":"system_power","params":{"mode":"shutdown"}}]}
+
+User: "Lautstärke auf 30"
+→ {"reply": "Volume set to 30 percent.", "actions": [{"action":"volume","params":{"percent":30}}]}"#;
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ToolCall {
@@ -817,25 +843,36 @@ fn execute_tool(call: &ToolCall) -> ActionResult {
         },
         "tent_status" => {
             let ts = block_on_async(pi_tent::get_pi_tent_status());
+            let mode = call
+                .params
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("full");
             let mut parts = Vec::new();
-            if let Some(sensor) = &ts.sensor {
-                parts.push(format!(
-                    "Tent: {:.1}°C, {:.1}% humidity, VPD {:.2}, battery {}%",
-                    sensor.temp, sensor.humi, sensor.vpd, sensor.batt
-                ));
+            if matches!(mode, "full" | "climate") {
+                if let Some(sensor) = &ts.sensor {
+                    parts.push(format!(
+                        "Tent: {:.1}°C, {:.1}% humidity, VPD {:.2}, battery {}%",
+                        sensor.temp, sensor.humi, sensor.vpd, sensor.batt
+                    ));
+                }
             }
-            if let Some(light) = &ts.light {
-                parts.push(format!(
-                    "Light: {} ({}%)",
-                    if light.power { "on" } else { "off" },
-                    light.brightness
-                ));
+            if mode == "full" {
+                if let Some(light) = &ts.light {
+                    parts.push(format!(
+                        "Light: {} ({}%)",
+                        if light.power { "on" } else { "off" },
+                        light.brightness
+                    ));
+                }
             }
-            if let Some(tank) = &ts.tank {
-                parts.push(format!(
-                    "Tank: {:.0}% ({:.1} liters)",
-                    tank.percent, tank.liters
-                ));
+            if matches!(mode, "full" | "tank") {
+                if let Some(tank) = &ts.tank {
+                    parts.push(format!(
+                        "Tank: {:.0}% ({:.1} liters)",
+                        tank.percent, tank.liters
+                    ));
+                }
             }
             ActionResult {
                 action,
@@ -873,6 +910,154 @@ fn execute_tool(call: &ToolCall) -> ActionResult {
                 message: format!("System status error: {e}"),
             },
         },
+        // ── Desktop Management Actions ──────────────────────────
+        "launch_app" => {
+            let app = call.params["app"].as_str().unwrap_or("").to_lowercase();
+            let (cmd, name) = match app.as_str() {
+                "firefox" | "browser" => ("firefox", "Firefox"),
+                "steam" => ("steam", "Steam"),
+                "code" | "vscode" | "vs code" => ("code", "VS Code"),
+                "terminal" | "konsole" => ("kitty", "Kitty Terminal"),
+                "thunar" | "files" | "dateimanager" | "dateien" => ("thunar", "Thunar"),
+                "spotify" => ("spotify", "Spotify"),
+                "discord" => ("discord", "Discord"),
+                "obsidian" => ("obsidian", "Obsidian"),
+                "gimp" => ("gimp", "GIMP"),
+                "vlc" => ("vlc", "VLC"),
+                "lutris" => ("lutris", "Lutris"),
+                other => (other, other),
+            };
+            match std::process::Command::new("hyprctl")
+                .args(["dispatch", "exec", cmd])
+                .output()
+            {
+                Ok(out) if out.status.success() => ActionResult {
+                    action,
+                    success: true,
+                    message: format!("{name} launched."),
+                },
+                Ok(out) => {
+                    // Fallback: try direct launch without hyprctl
+                    match std::process::Command::new(cmd).spawn() {
+                        Ok(_) => ActionResult {
+                            action,
+                            success: true,
+                            message: format!("{name} launched (direct)."),
+                        },
+                        Err(_) => ActionResult {
+                            action,
+                            success: false,
+                            message: format!("Failed to launch {name}: {}", String::from_utf8_lossy(&out.stderr).trim()),
+                        },
+                    }
+                }
+                Err(_) => {
+                    // No hyprctl — launch directly
+                    match std::process::Command::new(cmd).spawn() {
+                        Ok(_) => ActionResult {
+                            action,
+                            success: true,
+                            message: format!("{name} launched."),
+                        },
+                        Err(e) => ActionResult {
+                            action,
+                            success: false,
+                            message: format!("Failed to launch {name}: {e}"),
+                        },
+                    }
+                }
+            }
+        }
+        "screenshot" => {
+            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+            let path = format!("/home/max/Pictures/screenshot_{ts}.png");
+            let result = std::process::Command::new("grim")
+                .arg(&path)
+                .output();
+            match result {
+                Ok(out) if out.status.success() => ActionResult {
+                    action,
+                    success: true,
+                    message: format!("Screenshot saved: {path}"),
+                },
+                Ok(out) => ActionResult {
+                    action,
+                    success: false,
+                    message: format!("Screenshot failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
+                },
+                Err(e) => ActionResult {
+                    action,
+                    success: false,
+                    message: format!("Screenshot error: {e}"),
+                },
+            }
+        }
+        "lock_screen" => {
+            let _ = std::process::Command::new("loginctl").arg("lock-session").spawn();
+            ActionResult {
+                action,
+                success: true,
+                message: "Screen locked.".into(),
+            }
+        }
+        "system_power" => {
+            let mode = call.params["mode"].as_str().unwrap_or("").to_lowercase();
+            match mode.as_str() {
+                "shutdown" | "poweroff" => {
+                    let _ = std::process::Command::new("systemctl").arg("poweroff").spawn();
+                    ActionResult { action, success: true, message: "Shutting down...".into() }
+                }
+                "reboot" | "restart" => {
+                    let _ = std::process::Command::new("systemctl").arg("reboot").spawn();
+                    ActionResult { action, success: true, message: "Rebooting...".into() }
+                }
+                "suspend" | "sleep" => {
+                    let _ = std::process::Command::new("systemctl").arg("suspend").spawn();
+                    ActionResult { action, success: true, message: "Suspending...".into() }
+                }
+                _ => ActionResult { action, success: false, message: format!("Unknown power mode: {mode}") }
+            }
+        }
+        "audio_output" => {
+            let target = call.params["device"].as_str().unwrap_or("").to_lowercase();
+            // List sinks and find matching one
+            let list = std::process::Command::new("wpctl").args(["status"]).output();
+            let sink_id = match &list {
+                Ok(out) => {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    // Find a sink line matching the target name
+                    text.lines().find(|l| {
+                        let lower = l.to_lowercase();
+                        lower.contains(&target) && (lower.contains("sink") || lower.contains("audio"))
+                    }).and_then(|l| {
+                        // Extract ID number from the line
+                        l.trim().split_whitespace().next()
+                            .and_then(|s| s.trim_end_matches('.').parse::<u32>().ok())
+                    })
+                }
+                Err(_) => None,
+            };
+            match sink_id {
+                Some(id) => {
+                    let _ = std::process::Command::new("wpctl")
+                        .args(["set-default", &id.to_string()])
+                        .output();
+                    ActionResult { action, success: true, message: format!("Audio output switched to {target}.") }
+                }
+                None => ActionResult { action, success: false, message: format!("Audio device '{target}' not found.") }
+            }
+        }
+        "volume" => {
+            let percent = call.params["percent"].as_u64().unwrap_or(50).min(150);
+            let _ = std::process::Command::new("wpctl")
+                .args(["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{}%", percent)])
+                .output();
+            ActionResult {
+                action,
+                success: true,
+                message: format!("Volume set to {percent}%."),
+            }
+        }
         other => ActionResult {
             action: other.to_string(),
             success: false,
@@ -1042,6 +1227,25 @@ fn default_voice_ack(prepared: &PreparedAssistantResponse) -> String {
     }
 }
 
+fn prepared_from_keyword_actions(
+    reply: String,
+    kw_actions: Vec<KeywordAction>,
+) -> PreparedAssistantResponse {
+    let calls = kw_actions
+        .into_iter()
+        .map(|ka| ToolCall {
+            action: ka.action,
+            params: ka.params,
+        })
+        .collect();
+
+    PreparedAssistantResponse {
+        reply,
+        fallback_text: String::new(),
+        calls,
+    }
+}
+
 pub(crate) fn execute_voice_command(
     command: String,
     log_prefix: &str,
@@ -1050,19 +1254,53 @@ pub(crate) fn execute_voice_command(
     Option<std::thread::JoinHandle<Vec<ActionResult>>>,
 ) {
     let start = std::time::Instant::now();
-    let history = vec![ChatMessage {
-        role: "user".into(),
-        content: command,
-    }];
+    let resolution = intent::resolve_voice_command(&command);
+    log::info!(
+        "[{log_prefix}] Voice chain raw={:?} normalized={:?} repaired={:?}",
+        command,
+        resolution.normalized,
+        resolution.repaired
+    );
+    log::info!(
+        "[{log_prefix}] Voice resolver candidate={:?} canonical={:?} score={:.2} threshold={:.2} accepted={} fallback_allowed={}",
+        resolution.best_candidate,
+        resolution.canonical,
+        resolution.score,
+        resolution.threshold,
+        resolution.accepted,
+        resolution.allow_open_fallback
+    );
 
-    let prepared = match prepare_assistant_response(&history) {
-        Ok(prepared) => prepared,
-        Err(response) => {
-            log::warn!(
-                "[{log_prefix}] Voice command failed before execution: {}",
-                response.text
-            );
-            return (response, None);
+    let prepared = if let Some(closed_set) = resolution.command {
+        let (reply, kw_actions) = intent::closed_set_command_actions(closed_set);
+        prepared_from_keyword_actions(reply, kw_actions)
+    } else if let Some((reply, kw_actions)) = intent::try_fast_parse(&resolution.repaired) {
+        prepared_from_keyword_actions(reply, kw_actions)
+    } else if resolution.repaired.is_empty() || !resolution.allow_open_fallback {
+        let response = AssistantResponse {
+            text: "I could not reliably understand that command, Sir.".into(),
+            actions: vec![],
+        };
+        log::warn!(
+            "[{log_prefix}] Rejected unclear transcript: reason={:?}",
+            resolution.reject_reason
+        );
+        return (response, None);
+    } else {
+        let history = vec![ChatMessage {
+            role: "user".into(),
+            content: resolution.repaired.clone(),
+        }];
+
+        match prepare_assistant_response(&history) {
+            Ok(prepared) => prepared,
+            Err(response) => {
+                log::warn!(
+                    "[{log_prefix}] Voice command failed before execution: {}",
+                    response.text
+                );
+                return (response, None);
+            }
         }
     };
 

@@ -1,22 +1,16 @@
 import { useState, useEffect } from "react";
-import { Routes, Route, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { Routes, Route, NavLink, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  LayoutDashboard,
   Camera,
-  RefreshCw,
-  Settings,
-  HardDrive,
-  Terminal,
   Activity,
   Shield,
-  ShieldCheck,
-  Trash2,
   Gauge,
   PanelLeftClose,
   PanelLeftOpen,
-  Wifi,
+  HardDrive,
+  Terminal,
   Lightbulb,
   Bot,
 } from "lucide-react";
@@ -34,24 +28,19 @@ import Lighting from "./pages/Lighting";
 import BootGuard from "./pages/BootGuard";
 import Assistant from "./pages/Assistant";
 import Widget from "./pages/Widget";
+import SplitView from "./components/SplitView";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import SetupWizard from "./components/SetupWizard";
 import { api } from "./api";
 
 const nav = [
-  { to: "/", icon: Activity, label: "Monitor" },
-  { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+  { to: "/", icon: Bot, label: "Assistant" },
+  { to: "/system", icon: Activity, label: "System" },
   { to: "/snapshots", icon: Camera, label: "Snapshots" },
-  { to: "/sync", icon: RefreshCw, label: "NVMe Sync" },
-  { to: "/cleanup", icon: Trash2, label: "Aufräumen" },
-  { to: "/tuning", icon: Gauge, label: "Tuning" },
-  { to: "/pi", icon: Wifi, label: "Pi Remote" },
-  { to: "/lighting", icon: Lightbulb, label: "Lighting" },
-  { to: "/assistant", icon: Bot, label: "Assistant" },
-  { to: "/boot-guard", icon: ShieldCheck, label: "Boot Guard" },
-  { to: "/disks", icon: HardDrive, label: "Disks" },
-  { to: "/logs", icon: Terminal, label: "Logs" },
-  { to: "/settings", icon: Settings, label: "Einstellungen" },
+  { to: "/storage", icon: HardDrive, label: "Storage" },
+  { to: "/smarthome", icon: Lightbulb, label: "Smart Home" },
+  { to: "/config", icon: Gauge, label: "Config" },
+  { to: "/utilities", icon: Terminal, label: "Utilities" },
 ];
 
 export default function App() {
@@ -63,7 +52,7 @@ export default function App() {
   // Listen for Rust "navigate-assistant" events (clap detection)
   useEffect(() => {
     const unlisten = listen("navigate-assistant", () => {
-      navigate("/assistant");
+      navigate("/");
     });
     return () => { unlisten.then(fn => fn()); };
   }, [navigate]);
@@ -89,17 +78,12 @@ export default function App() {
   }
 
   // Assistant mode — fullscreen, no sidebar (Iron Man HUD)
-  const isAssistant = location.pathname === "/assistant";
+  const isAssistant = location.pathname === "/";
 
-  // Toggle true fullscreen when entering/leaving assistant
+  // Always run fullscreen
   useEffect(() => {
-    const win = getCurrentWindow();
-    if (isAssistant) {
-      win.setFullscreen(true);
-    } else {
-      win.setFullscreen(false);
-    }
-  }, [isAssistant]);
+    getCurrentWindow().setFullscreen(true);
+  }, []);
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -120,10 +104,7 @@ export default function App() {
         {/* Navigation */}
         <nav className={`flex-1 py-3 ${collapsed ? "px-2" : "px-3"} space-y-0.5`}>
           {nav.map((item) => {
-            const isActive =
-              item.to === "/"
-                ? location.pathname === "/"
-                : location.pathname.startsWith(item.to);
+            const isActive = location.pathname === item.to || (item.to !== "/" && location.pathname.startsWith(item.to));
             return (
               <NavLink
                 key={item.to}
@@ -170,22 +151,16 @@ export default function App() {
       )}
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto">
+      <main className={`flex-1 ${isAssistant ? "overflow-hidden" : "overflow-y-auto"}`}>
         <ErrorBoundary>
           <Routes>
-            <Route path="/" element={<Monitor />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/snapshots" element={<Snapshots />} />
-            <Route path="/sync" element={<Sync />} />
-            <Route path="/cleanup" element={<Cleanup />} />
-            <Route path="/tuning" element={<Tuning />} />
-            <Route path="/pi" element={<PiRemote />} />
-            <Route path="/lighting" element={<Lighting />} />
-            <Route path="/assistant" element={<Assistant />} />
-            <Route path="/boot-guard" element={<BootGuard />} />
-            <Route path="/disks" element={<Disks />} />
-            <Route path="/logs" element={<Logs />} />
-            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/" element={<Assistant />} />
+            <Route path="/system" element={<SplitView left={<Monitor />} right={<Dashboard />} />} />
+            <Route path="/snapshots" element={<SplitView left={<Snapshots />} right={<Cleanup />} />} />
+            <Route path="/storage" element={<SplitView left={<Sync />} right={<Disks />} />} />
+            <Route path="/smarthome" element={<SplitView left={<PiRemote />} right={<Lighting />} />} />
+            <Route path="/config" element={<SplitView left={<Tuning />} right={<BootGuard />} />} />
+            <Route path="/utilities" element={<SplitView left={<Logs />} right={<SettingsPage />} />} />
           </Routes>
         </ErrorBoundary>
       </main>

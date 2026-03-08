@@ -24,6 +24,7 @@ mod boot_patch;
 mod cleanup;
 mod config_cmd;
 pub(crate) mod corsair;
+mod desktop_launcher;
 mod efi;
 mod fstab;
 mod headless;
@@ -64,6 +65,7 @@ pub use corsair::{
     corsair_nexus_status, corsair_save_profile, corsair_set_fan_curve, corsair_set_fan_speed,
     corsair_set_rgb, get_corsair_status,
 };
+pub use desktop_launcher::{launch_desktop_app, list_desktop_apps};
 pub use headless::run_sync_headless;
 pub use health::{get_health, get_system_status};
 pub use install::{

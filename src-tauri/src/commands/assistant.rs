@@ -1,10 +1,14 @@
-//! Jarvis — high-level Tauri bindings and voice-flow orchestration.
+//! Jarvis — voice-flow orchestration and Tauri commands.
+//!
+//! Two triggers (clap / wake) → one unified `handle_activation()`.
+//! A single `SpeakingGuard` (RAII) owns the entire session lifecycle.
+//! No refcounts, no state machine, no phase deadlines.
 
 mod audio;
 mod core;
 mod listener;
-mod voice_state;
 
+use super::intent;
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -12,45 +16,20 @@ use tauri::command;
 use tauri::{AppHandle, Emitter, Manager};
 
 use self::audio::{
-    dec_speaking_guard, inc_speaking_guard, kill_active_tts, pick_entrance_path,
-    play_cached_ack, play_entrance_audio, tts_speak, wait_for_entrance_playback,
+    jarvis_listen_sync_with_ignore_ms, kill_active_tts, pick_cached_ack_path, pick_entrance_path,
+    play_cached_ack, play_cached_ack_file, play_entrance_audio, stop_tracked_audio, tts_speak,
+    wait_for_entrance_playback, wav_duration_ms, SpeakingGuard, SESSION_ACTIVE,
 };
 use self::core::execute_voice_command;
 use self::listener::ListenerEvent;
-use self::voice_state::{
-    begin_clap_session, begin_voice_command, begin_wake_acknowledgement,
-    finish_voice_command as finish_voice_state_command, finish_wake_acknowledgement,
-    reset as reset_voice_state,
-};
 
 pub use self::audio::{
     ensure_orpheus_tts_running, jarvis_listen_sync, jarvis_speak_sync, transcribe_audio_sync,
     tts_generate_sync,
 };
-
 pub use self::audio::ensure_stt_worker as warmup_stt_worker;
 
-const CLAP_ARM_DELAY_MS: u64 = 1_100;
-const ENTRANCE_RESPONSE_WAIT_MS: u64 = 2_400;
-const AUDIO_HANDOFF_DELAY_MS: u64 = 140;
-
-/// Detect when Whisper captures the cached ack WAV itself via AEC leakage.
-/// These are the exact phrases Orpheus generates for the "Yes, Sir?" ack.
-fn is_ack_leakage(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    let lower = lower.trim_end_matches(['.', '?', '!', ',']);
-    matches!(
-        lower,
-        "yes" | "yes sir" | "yes, sir" | "ja" | "ja sir" | "ja, sir"
-            | "yes sir?" | "ja sir?"
-    )
-}
-
-/// Global app handle — set once in lib.rs setup, used by clap/wake threads.
-static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
-
-/// Global on/off switch for always-listening Jarvis wake detection.
-static LISTENER_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+// ── Types (public API, used by gateway + intent) ────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -73,63 +52,50 @@ pub struct ActionResult {
     pub message: String,
 }
 
-/// Used by `intent` fast-parser to describe actions to execute.
 #[derive(Debug, Clone)]
 pub struct KeywordAction {
     pub action: String,
     pub params: serde_json::Value,
 }
 
+// ── Globals ─────────────────────────────────────────────────────────
+
+static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
+static LISTENER_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatStreamMessage {
+    role: String,
+    content: String,
+    actions: Option<Vec<ActionResult>>,
+    source: String,
+}
+
+fn emit_voice_phase(phase: &str) {
+    if let Some(handle) = APP_HANDLE.get() {
+        let _ = handle.emit("jarvis-voice-phase", phase);
+    }
+}
+
+fn emit_chat_message(role: &str, content: &str, actions: Option<&[ActionResult]>) {
+    if let Some(handle) = APP_HANDLE.get() {
+        let payload = ChatStreamMessage {
+            role: role.to_owned(),
+            content: content.to_owned(),
+            actions: actions.map(ToOwned::to_owned),
+            source: "voice".to_owned(),
+        };
+        let _ = handle.emit("jarvis-chat-message", payload);
+    }
+}
+
 pub fn set_app_handle(handle: AppHandle) {
     let _ = APP_HANDLE.set(handle);
 }
 
-fn focus_main_window(handle: &AppHandle) {
-    if let Some(w) = handle.get_webview_window("main") {
-        let _ = w.show();
-        let _ = w.unminimize();
-        let _ = w.set_focus();
-    }
-}
-
-fn spawn_focus_fallbacks() {
-    std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-
-        let _ = Command::new("wmctrl")
-            .args(["-r", "Arclight", "-b", "add,above"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        let _ = Command::new("wmctrl")
-            .args(["-a", "Arclight"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    });
-}
-
-fn show_and_navigate_assistant() {
-    if let Some(handle) = APP_HANDLE.get() {
-        focus_main_window(handle);
-        let _ = handle.emit("navigate-assistant", ());
-
-        // Delayed fullscreen + always-on-top so the UI render isn't blocked
-        let handle2 = handle.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(180));
-            if let Some(w) = handle2.get_webview_window("main") {
-                if !w.is_fullscreen().unwrap_or(true) {
-                    let _ = w.set_fullscreen(true);
-                }
-                let _ = w.set_always_on_top(true);
-                let _ = w.set_focus();
-            }
-        });
-
-        spawn_focus_fallbacks();
-    }
-}
+// ── Tauri commands ──────────────────────────────────────────────────
 
 #[command]
 pub async fn assistant_chat(history: Vec<ChatMessage>) -> AssistantResponse {
@@ -178,10 +144,10 @@ pub fn jarvis_listener_enabled() -> bool {
 #[command]
 pub fn jarvis_set_listener_enabled(enabled: bool) -> bool {
     LISTENER_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
-
     if !enabled {
-        reset_voice_state("listener disabled");
-        audio::stop_tracked_audio();
+        SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        audio::clear_speaking_on_startup();
+        stop_tracked_audio();
         let _ = Command::new("pkill")
             .args(["-f", "openwake_listener.py"])
             .stdin(Stdio::null())
@@ -189,7 +155,6 @@ pub fn jarvis_set_listener_enabled(enabled: bool) -> bool {
             .stderr(Stdio::null())
             .status();
     }
-
     enabled
 }
 
@@ -201,202 +166,237 @@ pub fn spawn_clap_listener() {
         .expect("Failed to spawn Jarvis listener thread");
 }
 
-fn speak_voice_response(text: String, log_prefix: &str) {
-    if text.is_empty() {
-        return;
-    }
+// ── Activation triggers ─────────────────────────────────────────────
 
-    if let Err(e) = tts_speak(&text, true) {
-        log::warn!("[{log_prefix}] TTS failed for command response: {e}");
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trigger {
+    Clap,
+    Wake,
 }
 
-fn capture_followup_command(log_prefix: &'static str, empty_reason: &'static str) {
-    std::thread::sleep(std::time::Duration::from_millis(AUDIO_HANDOFF_DELAY_MS));
+/// AEC leakage filter — cached ack phrases + short "…sir" utterances.
+fn is_ack_leakage(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let lower = lower.trim_end_matches(['.', '?', '!', ',']);
+    let lower = lower.trim();
 
-    match jarvis_listen_sync() {
-        Ok(command) => {
-            let command = command.trim().to_string();
-            if command.is_empty() {
-                reset_voice_state(empty_reason);
-            } else {
-                log::info!("[{log_prefix}] Follow-up command captured: {command}");
-                spawn_voice_command(command, log_prefix);
-            }
-        }
-        Err(e) => {
-            log::info!("[{log_prefix}] No follow-up command captured: {e}");
-            reset_voice_state(empty_reason);
-        }
+    if matches!(
+        lower,
+        "yes" | "yes sir" | "yes, sir"
+            | "ja" | "ja sir" | "ja, sir"
+            | "right here, sir" | "right here sir"
+            | "at your service, sir" | "at your service sir"
+            | "listening, sir" | "listening sir"
+            | "go ahead, sir" | "go ahead sir"
+            | "i'm here, sir" | "i'm here sir" | "im here sir"
+            | "standing by, sir" | "standing by sir"
+    ) {
+        return true;
     }
+    // ≤4 words ending in "sir" = almost certainly ack leakage
+    let words = lower.split_whitespace().count();
+    words <= 4 && lower.ends_with("sir")
 }
 
-fn spawn_clap_session() {
-    if !begin_clap_session() {
-        return;
-    }
+// ── Unified session flow ────────────────────────────────────────────
 
-    std::thread::spawn(|| {
-        show_and_navigate_assistant();
+fn handle_activation(trigger: Trigger, guard: SpeakingGuard) {
+    show_and_navigate_assistant();
+
+    if trigger == Trigger::Clap {
         std::thread::spawn(|| {
             let _ = super::lighting::lighting_master_power(true);
         });
-
-        let entrance_path = pick_entrance_path();
-        if let Err(e) = play_entrance_audio(&entrance_path) {
-            log::warn!("[jarvis-clap] Entrance audio failed: {e}");
-        }
-
-        let _ = wait_for_entrance_playback(CLAP_ARM_DELAY_MS, false);
-        voice_state::arm_command_window_after_clap();
-        capture_followup_command("jarvis-clap", "clap follow-up capture failed");
-    });
-}
-
-fn spawn_wake_acknowledgement() {
-    let Some(effects) = begin_wake_acknowledgement() else {
-        return;
-    };
-
-    std::thread::spawn(move || {
-        // Hold speaking flag so the *listener* (raw mic, no AEC) ignores
-        // our TTS output.  The STT capture uses jarvis_clean (AEC+NS+AGC)
-        // which cancels our own audio, so it can record in parallel.
-        inc_speaking_guard();
-        show_and_navigate_assistant();
-        let interrupted = if effects.stop_entrance {
-            wait_for_entrance_playback(ENTRANCE_RESPONSE_WAIT_MS, true)
-        } else {
-            false
-        };
-        if interrupted {
-            std::thread::sleep(std::time::Duration::from_millis(AUDIO_HANDOFF_DELAY_MS));
-        }
-
-        // Start STT capture BEFORE TTS — jarvis_clean's AEC filters out
-        // our own "Yes, Sir?" so only the user's voice is captured.
-        let listen_handle = std::thread::Builder::new()
-            .name("jarvis-wake-listen".into())
-            .spawn(jarvis_listen_sync)
-            .expect("spawn wake-listen thread");
-
-        // Brief settle time for pw-cat to connect before audio plays
-        std::thread::sleep(std::time::Duration::from_millis(60));
-
-        // Play cached acknowledgement while already recording (~50ms vs ~800ms TTS)
-        if let Err(e) = play_cached_ack(true) {
-            log::warn!("[jarvis-wake] Cached ack failed, falling back to TTS: {e}");
-            if let Err(e2) = tts_speak("Yes, Sir?", true) {
-                log::warn!("[jarvis-wake] TTS fallback also failed: {e2}");
-            }
-        }
-        finish_wake_acknowledgement();
-        dec_speaking_guard();
-
-        // Collect the STT result (user may speak during or after TTS)
-        match listen_handle.join() {
-            Ok(Ok(command)) => {
-                let command = command.trim().to_string();
-                if command.is_empty() || is_ack_leakage(&command) {
-                    if !command.is_empty() {
-                        log::info!("[jarvis-followup] Discarded AEC-leaked ack: {command}");
-                    }
-                    reset_voice_state("wake follow-up capture empty");
-                } else {
-                    log::info!("[jarvis-followup] Follow-up command captured: {command}");
-                    spawn_voice_command(command, "jarvis-followup");
-                }
-            }
-            Ok(Err(e)) => {
-                log::info!("[jarvis-followup] No follow-up command captured: {e}");
-                reset_voice_state("wake follow-up capture failed");
-            }
-            Err(_) => {
-                reset_voice_state("wake listen thread panicked");
-            }
-        }
-    });
-}
-
-fn spawn_voice_command(command: String, log_prefix: &'static str) {
-    let Some(effects) = begin_voice_command() else {
-        return;
-    };
-
-    if effects.stop_tts {
-        kill_active_tts();
     }
 
-    std::thread::spawn(move || {
-        // Hold speaking flag for the ENTIRE command flow (entrance wait +
-        // acknowledgement TTS + command TTS) so Python never hears us.
-        inc_speaking_guard();
-        let cmd_start = std::time::Instant::now();
-        show_and_navigate_assistant();
-
-        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
-        let prepare_prefix = log_prefix;
-        std::thread::spawn(move || {
-            let result = execute_voice_command(command, prepare_prefix);
-            let _ = result_tx.send(result);
-        });
-
-        let interrupted = if effects.stop_entrance {
-            wait_for_entrance_playback(ENTRANCE_RESPONSE_WAIT_MS, true)
-        } else {
-            false
-        };
-
-        if interrupted {
-            std::thread::sleep(std::time::Duration::from_millis(AUDIO_HANDOFF_DELAY_MS));
+    // Get user command — the two triggers differ only here
+    let command = match trigger {
+        Trigger::Clap => {
+            emit_voice_phase("speaking");
+            let entrance_path = pick_entrance_path();
+            if let Err(e) = play_entrance_audio(&entrance_path) {
+                log::warn!("[jarvis-clap] Entrance audio failed: {e}");
+            }
+            let _ = wait_for_entrance_playback(1_100, false);
+            std::thread::sleep(std::time::Duration::from_millis(140));
+            emit_voice_phase("listening");
+            jarvis_listen_sync()
         }
+        Trigger::Wake => {
+            // Start STT immediately, but ignore exactly the ack duration.
+            // This keeps the first user words while preventing ack self-capture.
+            let ack = pick_cached_ack_path().ok();
+            let ack_ignore_ms = ack
+                .as_ref()
+                .and_then(|p| wav_duration_ms(p))
+                .map(|ms| ms.saturating_add(40))
+                .unwrap_or(900);
 
-        let (mut resp, worker) = match result_rx.recv() {
-            Ok(result) => result,
-            Err(_) => (
-                AssistantResponse {
-                    text: "⚠️ Voice command preparation failed".into(),
-                    actions: vec![],
-                },
-                None,
-            ),
-        };
+            let stt = std::thread::Builder::new()
+                .name("jarvis-wake-listen".into())
+                .spawn(move || jarvis_listen_sync_with_ignore_ms(ack_ignore_ms))
+                .expect("spawn wake-listen");
 
-        speak_voice_response(resp.text, log_prefix);
+            emit_voice_phase("speaking");
+            if let Some(path) = ack.as_ref() {
+                if let Err(e) = play_cached_ack_file(path, true) {
+                    log::warn!("[jarvis-wake] Cached ack failed: {e}");
+                    let _ = tts_speak("Yes, Sir?", true);
+                }
+            } else if let Err(e) = play_cached_ack(true) {
+                log::warn!("[jarvis-wake] Cached ack failed: {e}");
+                let _ = tts_speak("Yes, Sir?", true);
+            }
 
-        if let Some(worker) = worker {
-            resp.actions = match worker.join() {
-                Ok(results) => results,
-                Err(_) => vec![ActionResult {
-                    action: "voice_command".into(),
-                    success: false,
-                    message: "Voice command worker panicked".into(),
-                }],
-            };
-
-            for result in resp.actions.iter().filter(|result| !result.success) {
-                log::warn!("[{log_prefix}] Action failed: {}", result.message);
+            emit_voice_phase("listening");
+            match stt.join() {
+                Ok(result) => result,
+                Err(_) => Err("STT thread panicked".into()),
             }
         }
+    };
 
-        log::info!(
-            "[{log_prefix}] Command complete ({}ms total)",
-            cmd_start.elapsed().as_millis()
-        );
-        finish_voice_state_command("voice command finished");
-        dec_speaking_guard();
-    });
+    // Process the result
+    let tag = if trigger == Trigger::Clap { "clap" } else { "wake" };
+    match command {
+        Ok(cmd) => {
+            let cmd = cmd.trim().to_string();
+            if cmd.is_empty() {
+                emit_voice_phase("idle");
+                log::info!("[jarvis-{tag}] No command captured");
+                // guard drops → session ends, listener unmutes
+                return;
+            }
+            if is_ack_leakage(&cmd) {
+                emit_voice_phase("idle");
+                log::info!("[jarvis-{tag}] Discarded AEC-leaked ack: {cmd}");
+                return;
+            }
+            emit_voice_phase("processing");
+            log::info!("[jarvis-{tag}] Command: {cmd}");
+            run_voice_command(cmd, tag, guard);
+        }
+        Err(e) => {
+            emit_voice_phase("idle");
+            log::info!("[jarvis-{tag}] STT failed: {e}");
+            // guard drops → session ends
+        }
+    }
 }
+
+/// Execute a voice command — LLM + TTS response.
+/// Takes ownership of the SpeakingGuard so the session stays muted
+/// through the entire command + response TTS.  Guard drops at the end.
+fn run_voice_command(command: String, tag: &str, _guard: SpeakingGuard) {
+    let start = std::time::Instant::now();
+    let display_command = intent::canonicalize_voice_command(&command);
+    emit_chat_message(
+        "user",
+        if display_command.is_empty() {
+            &command
+        } else {
+            &display_command
+        },
+        None,
+    );
+
+    // Kill any lingering entrance audio
+    kill_active_tts();
+
+    let (resp, worker) = execute_voice_command(command, tag);
+    if !resp.text.trim().is_empty() {
+        emit_chat_message("assistant", &resp.text, Some(&resp.actions));
+    }
+
+    // Speak the response (guard keeps listener muted)
+    if !resp.text.is_empty() {
+        emit_voice_phase("speaking");
+        if let Err(e) = tts_speak(&resp.text, true) {
+            log::warn!("[jarvis-{tag}] TTS failed: {e}");
+        }
+    }
+
+    // Wait for any async action workers
+    if let Some(worker) = worker {
+        match worker.join() {
+            Ok(results) => {
+                for r in results.iter().filter(|r| !r.success) {
+                    log::warn!("[jarvis-{tag}] Action failed: {}", r.message);
+                }
+            }
+            Err(_) => log::warn!("[jarvis-{tag}] Action worker panicked"),
+        }
+    }
+
+    log::info!(
+        "[jarvis-{tag}] Command complete ({}ms)",
+        start.elapsed().as_millis()
+    );
+    emit_voice_phase("idle");
+    // _guard drops here → file removed, SESSION_ACTIVE = false
+}
+
+// ── UI helpers ──────────────────────────────────────────────────────
+
+fn show_and_navigate_assistant() {
+    if let Some(handle) = APP_HANDLE.get() {
+        if let Some(w) = handle.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+        let _ = handle.emit("navigate-assistant", ());
+
+        let handle2 = handle.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(180));
+            if let Some(w) = handle2.get_webview_window("main") {
+                if !w.is_fullscreen().unwrap_or(true) {
+                    let _ = w.set_fullscreen(true);
+                }
+                let _ = w.set_always_on_top(true);
+                let _ = w.set_focus();
+            }
+        });
+
+        // wmctrl fallback
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let _ = Command::new("wmctrl")
+                .args(["-r", "Arclight", "-b", "add,above"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            let _ = Command::new("wmctrl")
+                .args(["-a", "Arclight"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        });
+    }
+}
+
+// ── Listener event dispatch ─────────────────────────────────────────
 
 fn handle_listener_event(event: ListenerEvent) {
     match event {
         ListenerEvent::Clap => {
+            if SESSION_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             log::info!("[jarvis-listener] Clap detected");
-            spawn_clap_session();
+            if let Some(guard) = SpeakingGuard::try_acquire() {
+                std::thread::spawn(move || handle_activation(Trigger::Clap, guard));
+            }
         }
         ListenerEvent::Wake => {
+            if SESSION_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             log::info!("[jarvis-listener] Wake word detected");
-            spawn_wake_acknowledgement();
+            if let Some(guard) = SpeakingGuard::try_acquire() {
+                std::thread::spawn(move || handle_activation(Trigger::Wake, guard));
+            }
         }
         ListenerEvent::Telemetry(telem) => {
             if let Some(handle) = APP_HANDLE.get() {

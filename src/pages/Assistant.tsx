@@ -1,14 +1,19 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo, type RefObject } from "react";
 import { Mic, Send, Volume2, VolumeX, Zap, Power, ChevronUp, ArrowLeft, Droplets, Thermometer, Sun, Gauge, Activity } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { api, apiError, type SystemMonitorData, type GpuOcStatus, type PiTentStatus } from "../api";
+import { api, apiError, type SystemMonitorData, type GpuOcStatus, type PiTentStatus, type DesktopApp } from "../api";
 
 // ── Types ────────────────────────────────────────────────────
 interface Message { role: "user" | "assistant"; content: string; actions?: { action: string; success: boolean; message: string }[]; }
 type Phase = "idle" | "listening" | "processing" | "speaking";
 type OrbitItem = { l: string; v: string; w?: boolean };
 interface AudioTelemetry { rms: number; peak: number; wake: number; state: string; }
+interface VoicePhaseEvent { payload: Phase; }
+interface ChatStreamEvent { payload: Message & { source?: string }; }
+interface LauncherHex { id: string; label: string; x: number; y: number; appId: string; accent: string; }
+interface LauncherDraft { label: string; appId: string; }
 
 // ── Constants ────────────────────────────────────────────────
 const CY = "#22d3ee", CY2 = "#06b6d4", CYD = "rgba(34,211,238,0.12)";
@@ -26,7 +31,7 @@ const R5 = Cx * 0.56, R6 = Cx * 0.46, RC = Cx * 0.26;
 
 // graph dimensions (wider/taller for readability)
 const GW = 410, GH = 68, GHS = 56;
-const ORBIT_R = R1 + 54;
+const ORBIT_R = R1 + 100;
 const ORBIT_BADGE_W = 132;
 
 function useNow(ms = 1000) {
@@ -254,17 +259,85 @@ const OrbitBadges = memo(function OrbitBadges({ orbitData, rc, gd }: { orbitData
 });
 
 // ── Audio Canvas constants ────────────────────────────────────
-const AUDIO_RING_LEN = 96;
-const AUDIO_INNER_R = R1 + 14;
-const AUDIO_BAR_MAX = 52;
-const AUDIO_RMS_CEIL = 1800;
-const WAKE_ARC_R = R1 + 5;
+const AUDIO_RING_LEN = 128;
+const AUDIO_INNER_R = R1 + 16;
+const AUDIO_BAR_MAX = 72;
+const AUDIO_TRAIL_COUNT = 40;
+const AUDIO_TRAIL_ARC = Math.PI * 0.82;
+const AUDIO_RMS_CEIL = 2200;
+const WAKE_ARC_R = R1 + 8;
 const WAKE_THRESHOLD = 0.42;
 const PARTICLE_COUNT = 120;
 const PARTICLE_SPAWN_R_MIN = R1 - 20;
 const PARTICLE_SPAWN_R_MAX = R1 + 60;
 const SCANNER_SPEED = 0.4; // radians per second
 const ENERGY_PULSE_INTERVAL = 3000; // ms
+const LAUNCHER_STORAGE_KEY = "arclight.launcher.hexes.v6";
+const DEFAULT_LAUNCHER_HEXES: Array<LauncherHex & { matchers: string[] }> = [
+  { id: "browser", label: "Browser", appId: "", x: 90, y: 0, accent: "#60a5fa", matchers: ["firefox", "browser", "chrom", "brave"] },
+  { id: "files", label: "Files", appId: "", x: 0, y: 52, accent: "#34d399", matchers: ["thunar", "files", "dolphin", "nautilus"] },
+  { id: "steam", label: "Steam", appId: "", x: 180, y: 52, accent: "#38bdf8", matchers: ["steam"] },
+  { id: "code", label: "Code", appId: "", x: 90, y: 104, accent: "#818cf8", matchers: ["code", "vscodium", "visual studio code"] },
+  { id: "music", label: "Music", appId: "", x: 0, y: 156, accent: "#f59e0b", matchers: ["spotify", "music"] },
+  { id: "terminal", label: "Terminal", appId: "", x: 180, y: 156, accent: "#f472b6", matchers: ["kitty", "konsole", "terminal", "alacritty"] },
+  { id: "discord", label: "Discord", appId: "", x: 90, y: 208, accent: "#8b5cf6", matchers: ["discord", "vesktop"] },
+];
+
+function loadLauncherHexes(): LauncherHex[] {
+  if (typeof window === "undefined") {
+    return DEFAULT_LAUNCHER_HEXES.map(({ matchers: _matchers, ...hex }) => hex);
+  }
+  try {
+    const raw = window.localStorage.getItem(LAUNCHER_STORAGE_KEY);
+    if (!raw) {
+      return DEFAULT_LAUNCHER_HEXES.map(({ matchers: _matchers, ...hex }) => hex);
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return DEFAULT_LAUNCHER_HEXES.map(({ matchers: _matchers, ...hex }) => hex);
+    }
+    const byId = new Map<string, LauncherHex>();
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const { id, label, appId, x, y, accent } = item as Partial<LauncherHex>;
+      if (typeof id !== "string" || typeof label !== "string" || typeof appId !== "string" || typeof x !== "number" || typeof y !== "number" || typeof accent !== "string") {
+        continue;
+      }
+      byId.set(id, { id, label, appId, x, y, accent });
+    }
+    return DEFAULT_LAUNCHER_HEXES.map(({ matchers: _matchers, ...hex }) => byId.get(hex.id) ?? hex);
+  } catch {
+    return DEFAULT_LAUNCHER_HEXES.map(({ matchers: _matchers, ...hex }) => hex);
+  }
+}
+
+function resolveDefaultAppId(apps: DesktopApp[], matchers: string[]): string {
+  const lowered = apps.map(app => ({ ...app, haystack: `${app.id} ${app.name}`.toLowerCase() }));
+  for (const matcher of matchers) {
+    const found = lowered.find(app => app.haystack.includes(matcher));
+    if (found) return found.id;
+  }
+  return "";
+}
+
+function desktopIconSrc(app?: DesktopApp): string | null {
+  if (!app?.iconPath) return null;
+  return convertFileSrc(app.iconPath);
+}
+
+function hydrateLauncherHexes(hexes: LauncherHex[], apps: DesktopApp[]): LauncherHex[] {
+  const known = new Set(apps.map(app => app.id));
+  return hexes.map(hex => {
+    if (hex.appId && known.has(hex.appId)) {
+      return hex;
+    }
+    const fallback = DEFAULT_LAUNCHER_HEXES.find(item => item.id === hex.id);
+    if (!fallback) {
+      return { ...hex, appId: "" };
+    }
+    return { ...hex, appId: resolveDefaultAppId(apps, fallback.matchers) };
+  });
+}
 
 interface Particle {
   x: number; y: number; vx: number; vy: number;
@@ -272,27 +345,36 @@ interface Particle {
   hue: number; bright: number;
 }
 
-/** High-performance Canvas overlay: AudioRing + WakeArc + particles + scanner + pulses.
- *  Runs entirely on requestAnimationFrame — ZERO React re-renders. */
-const AudioCanvas = memo(function AudioCanvas({ telemRef, phaseRef }: {
+/** High-performance Canvas overlay: AudioRing + WakeArc + particles + scanner + shockwaves.
+ *  Full-viewport canvas — no clipping. Runs entirely on requestAnimationFrame. */
+const AudioCanvas = memo(function AudioCanvas({ telemRef, phaseRef, activatedAtRef }: {
   telemRef: RefObject<{ ring: number[]; head: number; rms: number; peak: number; wake: number; state: string; rmsHist: number[]; wakeHist: number[] }>;
   phaseRef: RefObject<string>;
+  activatedAtRef: RefObject<number>;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const particlesRef = useRef<Particle[]>([]);
   const scanAngleRef = useRef(0);
+  const visualRingRef = useRef<number[]>(new Array(AUDIO_RING_LEN).fill(0));
   const lastPulseRef = useRef(0);
   const pulsesRef = useRef<{ r: number; birth: number; intensity: number }[]>([]);
   const prevTimeRef = useRef(0);
+  const smoothRmsRef = useRef(0);
+  const shockwavesRef = useRef<{ r: number; birth: number; intensity: number }[]>([]);
+  const lastActivatedRef = useRef(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = HUD * dpr;
-    canvas.height = HUD * dpr;
+    let cw = 0, ch = 0;
+    const resize = () => {
+      const dpr = window.devicePixelRatio || 1;
+      cw = window.innerWidth; ch = window.innerHeight;
+      canvas.width = cw * dpr; canvas.height = ch * dpr;
+    };
+    resize();
+    window.addEventListener("resize", resize);
     const ctx = canvas.getContext("2d", { alpha: true })!;
-    ctx.scale(dpr, dpr);
 
     // Spawn initial particles
     const particles = particlesRef.current;
@@ -311,6 +393,37 @@ const AudioCanvas = memo(function AudioCanvas({ telemRef, phaseRef }: {
       const isSpeaking = phase === "speaking";
 
       ctx.clearRect(0, 0, HUD, HUD);
+
+      // ── Viewport offset (translate so Cx,Cx maps to screen center) ──
+      const dpr = window.devicePixelRatio || 1;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const offX = cw / 2 - Cx;
+      const offY = ch / 2 - Cx;
+      ctx.translate(offX, offY);
+      ctx.clearRect(-offX, -offY, cw, ch);
+
+      // Smooth RMS for VU effects
+      const targetRms = Math.min(t.rms / AUDIO_RMS_CEIL, 1);
+      smoothRmsRef.current += (targetRms - smoothRmsRef.current) * Math.min(1, dt * 12);
+      const sRms = smoothRmsRef.current;
+
+      // ── Check activation (shockwave trigger) ──
+      const activAt = activatedAtRef.current;
+      if (activAt > lastActivatedRef.current) {
+        lastActivatedRef.current = activAt;
+        for (let i = 0; i < 5; i++) {
+          shockwavesRef.current.push({ r: RC * 0.3, birth: timestamp + i * 100, intensity: 1.5 - i * 0.2 });
+        }
+        for (let j = 0; j < 40; j++) {
+          const bp = spawnParticle();
+          bp.size *= 2.5; bp.bright = 1.8;
+          bp.hue = Math.random() < 0.5 ? 190 : 30;
+          const a2 = Math.random() * Math.PI * 2;
+          bp.vx = Math.cos(a2) * (40 + Math.random() * 60);
+          bp.vy = Math.sin(a2) * (40 + Math.random() * 60);
+          particlesRef.current.push(bp);
+        }
+      }
 
       // ── Energy pulses (expanding rings from core) ──────────
       const now = timestamp;
@@ -338,9 +451,14 @@ const AudioCanvas = memo(function AudioCanvas({ telemRef, phaseRef }: {
         ctx.stroke();
       }
 
-      // ── Scanner beam (rotating radar sweep) ────────────────
+      // ── Scanner beam (smooth radar master) ─────────────────
       scanAngleRef.current += SCANNER_SPEED * dt * (isListening ? 3 : isSpeaking ? 1.8 : 1);
       const sa = scanAngleRef.current;
+      const headIndex = ((t.head % AUDIO_RING_LEN) + AUDIO_RING_LEN) % AUDIO_RING_LEN;
+      const headAngle = (headIndex * 360 / AUDIO_RING_LEN - 90) * Math.PI / 180;
+      let sweepOffset = sa - headAngle;
+      while (sweepOffset > Math.PI) sweepOffset -= Math.PI * 2;
+      while (sweepOffset < -Math.PI) sweepOffset += Math.PI * 2;
       const scanGrad = ctx.createConicGradient(sa, Cx, Cx);
       const scanColor = isListening ? "239,68,68" : "34,211,238";
       scanGrad.addColorStop(0, `rgba(${scanColor},0.14)`);
@@ -373,16 +491,80 @@ const AudioCanvas = memo(function AudioCanvas({ telemRef, phaseRef }: {
       ctx.fillStyle = `rgba(${scanColor},0.6)`;
       ctx.fill();
 
+      // ── Radar-coupled persistent audio ring buffer ────────
+      const visualRing = visualRingRef.current;
+      const decay = Math.exp(-dt * 2.6);
+      for (let i = 0; i < AUDIO_RING_LEN; i++) {
+        visualRing[i] *= decay;
+        if (visualRing[i] < 0.5) {
+          visualRing[i] = 0;
+        }
+      }
+      const normalizedScan = ((sa + Math.PI / 2) / (Math.PI * 2) % 1 + 1) % 1;
+      const scanSlotFloat = normalizedScan * AUDIO_RING_LEN;
+      const slotA = Math.floor(scanSlotFloat) % AUDIO_RING_LEN;
+      const slotB = (slotA + 1) % AUDIO_RING_LEN;
+      const slotFrac = scanSlotFloat - Math.floor(scanSlotFloat);
+      const depositedRms = Math.max(t.rms, sRms * AUDIO_RMS_CEIL);
+      visualRing[slotA] = Math.max(visualRing[slotA], depositedRms * (1 - slotFrac));
+      visualRing[slotB] = Math.max(visualRing[slotB], depositedRms * slotFrac);
+
+      // ── Shockwaves (expanding rings from activation) ──────
+      const shocks = shockwavesRef.current;
+      for (let i = shocks.length - 1; i >= 0; i--) {
+        const s = shocks[i];
+        if (timestamp < s.birth) continue;
+        const age = (timestamp - s.birth) / 1000;
+        s.r += dt * 450;
+        const alpha = Math.max(0, s.intensity * (1 - age / 1.8));
+        if (alpha <= 0 || s.r > Math.max(cw, ch)) { shocks.splice(i, 1); continue; }
+        const shockColor = isListening ? "239,68,68" : "34,211,238";
+        ctx.beginPath(); ctx.arc(Cx, Cx, s.r, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(${shockColor},${alpha * 0.5})`; ctx.lineWidth = 2.5 + alpha * 5; ctx.stroke();
+        ctx.beginPath(); ctx.arc(Cx, Cx, s.r, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255,255,255,${alpha * 0.08})`; ctx.lineWidth = 16 + alpha * 14; ctx.stroke();
+        ctx.beginPath(); ctx.arc(Cx, Cx, s.r - 6, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(249,115,22,${alpha * 0.25})`; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+
+      // ── Base ring (always visible, breathes with volume) ──
+      const baseAlpha = 0.08 + sRms * 0.32;
+      ctx.beginPath(); ctx.arc(Cx, Cx, AUDIO_INNER_R, 0, Math.PI * 2);
+      ctx.strokeStyle = isListening ? `rgba(239,68,68,${baseAlpha})` : `rgba(34,211,238,${baseAlpha})`;
+      ctx.lineWidth = 1 + sRms * 2.5; ctx.stroke();
+      // VU glow halo
+      if (sRms > 0.03) {
+        const glowC = sRms > 0.6 ? "239,68,68" : sRms > 0.25 ? "245,158,11" : isListening ? "239,68,68" : "34,211,238";
+        ctx.beginPath(); ctx.arc(Cx, Cx, AUDIO_INNER_R, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(${glowC},${sRms * 0.1})`; ctx.lineWidth = 10 + sRms * 28; ctx.stroke();
+      }
+
+      // ── Tick marks around base ring ────────────────────────
+      for (let a = 0; a < 360; a += 5) {
+        const rad = (a - 90) * Math.PI / 180;
+        const isMajor = a % 30 === 0, isMid = a % 10 === 0;
+        const len = isMajor ? 10 : isMid ? 6 : 3;
+        ctx.beginPath();
+        ctx.moveTo(Cx + Math.cos(rad) * (AUDIO_INNER_R - len - 2), Cx + Math.sin(rad) * (AUDIO_INNER_R - len - 2));
+        ctx.lineTo(Cx + Math.cos(rad) * (AUDIO_INNER_R - 2), Cx + Math.sin(rad) * (AUDIO_INNER_R - 2));
+        ctx.strokeStyle = isListening
+          ? `rgba(239,68,68,${isMajor ? 0.15 + sRms * 0.2 : 0.04 + sRms * 0.06})`
+          : `rgba(34,211,238,${isMajor ? 0.15 + sRms * 0.2 : 0.04 + sRms * 0.06})`;
+        ctx.lineWidth = isMajor ? 1.5 : 0.5; ctx.stroke();
+      }
+
       // ── Audio Ring (bars) ──────────────────────────────────
       for (let i = 0; i < AUDIO_RING_LEN; i++) {
         const angle = (i * 360 / AUDIO_RING_LEN - 90) * Math.PI / 180;
-        const age = ((t.head - i) % AUDIO_RING_LEN + AUDIO_RING_LEN) % AUDIO_RING_LEN;
-        const rms = t.ring[i] || 0;
+        let age = scanSlotFloat - i;
+        while (age < 0) age += AUDIO_RING_LEN;
+        while (age >= AUDIO_RING_LEN) age -= AUDIO_RING_LEN;
+        const rms = visualRing[i] || 0;
         const norm = Math.min(rms / AUDIO_RMS_CEIL, 1);
-        const barLen = 4 + norm * AUDIO_BAR_MAX;
+        const barLen = 5 + norm * AUDIO_BAR_MAX;
         const freshness = 1 - age / AUDIO_RING_LEN;
-        const alpha = Math.max(0.06, freshness * (0.3 + norm * 0.7));
-        const isHead = age === 0;
+        const alpha = Math.max(0.08, freshness * (0.35 + norm * 0.65));
+        const isHead = age < 1;
         const cos = Math.cos(angle), sin = Math.sin(angle);
         const x1 = Cx + cos * AUDIO_INNER_R;
         const y1 = Cx + sin * AUDIO_INNER_R;
@@ -400,15 +582,21 @@ const AudioCanvas = memo(function AudioCanvas({ telemRef, phaseRef }: {
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
         ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
-        ctx.lineWidth = isHead ? 3.5 : 2;
+        ctx.lineWidth = isHead ? 4 : 2.5;
         ctx.lineCap = "round";
         ctx.stroke();
+
+        // Glow on loud bars
+        if (norm > 0.5 && freshness > 0.3) {
+          ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+          ctx.strokeStyle = `rgba(${r},${g},${b},${alpha * 0.15})`; ctx.lineWidth = 8; ctx.stroke();
+        }
 
         // Head glow
         if (isHead) {
           ctx.beginPath();
-          ctx.arc(x2, y2, 5 + norm * 4, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${r},${g},${b},${0.25 + norm * 0.3})`;
+          ctx.arc(x2, y2, 6 + norm * 6, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${r},${g},${b},${0.3 + norm * 0.4})`;
           ctx.fill();
         }
 
@@ -553,14 +741,10 @@ const AudioCanvas = memo(function AudioCanvas({ telemRef, phaseRef }: {
     };
 
     raf = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(raf);
-  }, [telemRef, phaseRef]);
+    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
+  }, [telemRef, phaseRef, activatedAtRef]);
 
-  return (
-    <div className="absolute inset-0 flex items-center justify-center z-[9] pointer-events-none">
-      <canvas ref={canvasRef} width={HUD} height={HUD} style={{ width: HUD, height: HUD }} />
-    </div>
-  );
+  return <canvas ref={canvasRef} className="absolute inset-0 z-[9] pointer-events-none" />;
 });
 
 function spawnParticle(): Particle {
@@ -612,11 +796,19 @@ export default function Assistant() {
   const [tentVpdHist, setTentVpdHist] = useState<number[]>([]);
   const [tentBrightHist, setTentBrightHist] = useState<number[]>([]);
   const [tentError, setTentError] = useState<string | null>(null);
+  const [desktopApps, setDesktopApps] = useState<DesktopApp[]>([]);
+  const [launcherHexes, setLauncherHexes] = useState<LauncherHex[]>(() => loadLauncherHexes());
+  const [launcherError, setLauncherError] = useState<string | null>(null);
+  const [editingHexId, setEditingHexId] = useState<string | null>(null);
+  const [launcherQuery, setLauncherQuery] = useState("");
+  const [launcherDraft, setLauncherDraft] = useState<LauncherDraft>({ label: "", appId: "" });
 
   // ── Audio telemetry (ref-driven, no re-renders) ────────────
   const [audioTelem, setAudioTelem] = useState<AudioTelemetry | null>(null);
+  const [voicePhase, setVoicePhase] = useState<Phase | null>(null);
   const audioTelemRef = useRef({ ring: new Array(AUDIO_RING_LEN).fill(0), head: 0, rms: 0, peak: 0, wake: 0, state: "idle", rmsHist: [] as number[], wakeHist: [] as number[] });
   const phaseStrRef = useRef("idle");
+  const activatedAtRef = useRef(0);
   // Legacy state arrays for sidebar sparklines only (updated at lower rate)
   const [rmsHist, setRmsHist] = useState<number[]>([]);
   const [wakeHist, setWakeHist] = useState<number[]>([]);
@@ -625,7 +817,7 @@ export default function Assistant() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const phase: Phase = listening ? "listening" : loading ? "processing" : speaking ? "speaking" : "idle";
+  const phase: Phase = voicePhase ?? (listening ? "listening" : loading ? "processing" : speaking ? "speaking" : "idle");
   const rc = phase === "listening" ? RD : CY;
   const rc2 = phase === "listening" ? "#b91c1c" : CY2;
   const gd = phase === "listening" ? RDD : CYD;
@@ -637,6 +829,13 @@ export default function Assistant() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   useEffect(() => { if (messages.length > 0) setChatExpanded(true); }, [messages]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LAUNCHER_STORAGE_KEY, JSON.stringify(launcherHexes));
+    } catch {
+      // Ignore storage write failures.
+    }
+  }, [launcherHexes]);
   useEffect(() => {
     const unlisten = listen("navigate-assistant", () => { setActivated(true); setTimeout(() => setActivated(false), 2500); });
     return () => { unlisten.then(fn => fn()); };
@@ -668,8 +867,34 @@ export default function Assistant() {
     });
     return () => { unlisten.then(fn => fn()); };
   }, []);
+
+  useEffect(() => {
+    const unlisten = listen<Phase>("jarvis-voice-phase", (e: VoicePhaseEvent) => {
+      setVoicePhase(e.payload);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+  useEffect(() => {
+    const unlisten = listen<Message & { source?: string }>("jarvis-chat-message", (e: ChatStreamEvent) => {
+      setMessages(prev => [...prev, { role: e.payload.role, content: e.payload.content, actions: e.payload.actions }]);
+      setChatExpanded(true);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
   // Keep phase ref in sync
   useEffect(() => { phaseStrRef.current = phase; }, [phase]);
+  useEffect(() => { if (activated) activatedAtRef.current = performance.now(); }, [activated]);
+
+  useEffect(() => {
+    api.listDesktopApps()
+      .then(apps => {
+        setDesktopApps(apps);
+        setLauncherHexes(prev => hydrateLauncherHexes(prev, apps));
+      })
+      .catch(err => {
+        setLauncherError(apiError(err));
+      });
+  }, []);
 
   const refreshStatus = useCallback(() => {
     api.assistantStatus().then(([ok]) => setLlmOnline(ok)).catch(() => setLlmOnline(false));
@@ -716,6 +941,21 @@ export default function Assistant() {
   const toggleJarvisEnabled = useCallback(async () => {
     try { const e = await api.jarvisSetListenerEnabled(!jarvisEnabled); setJarvisEnabled(e); } catch { refreshStatus(); }
   }, [jarvisEnabled, refreshStatus]);
+
+  const launchHex = useCallback(async (hex: LauncherHex) => {
+    if (!hex.appId) {
+      setLauncherError("Diesem Hexagon ist noch kein Programm zugewiesen.");
+      setEditingHexId(hex.id);
+      setLauncherDraft({ label: hex.label, appId: hex.appId });
+      return;
+    }
+    setLauncherError(null);
+    try {
+      await api.launchDesktopApp(hex.appId);
+    } catch (err) {
+      setLauncherError(apiError(err));
+    }
+  }, []);
 
   useEffect(() => {
     refreshStatus();
@@ -803,6 +1043,36 @@ export default function Assistant() {
     { l: "LICHT", v: tentLight ? `${tentLight.brightness}%` : "—" },
     { l: "HUMI", v: tent ? `${tent.humi.toFixed(0)}%` : "—" },
   ], [cpuUsage, gpuFanRpm, gpuLoad, gpuPower, gpuTemp, ramPct, tent, tentLight, tentTank]);
+  const appById = useMemo(() => new Map(desktopApps.map(app => [app.id, app] as const)), [desktopApps]);
+  const editingHex = useMemo(() => launcherHexes.find(hex => hex.id === editingHexId) ?? null, [editingHexId, launcherHexes]);
+  const filteredDesktopApps = useMemo(() => {
+    const query = launcherQuery.trim().toLowerCase();
+    if (!query) return desktopApps;
+    return desktopApps.filter(app => `${app.name} ${app.id}`.toLowerCase().includes(query));
+  }, [desktopApps, launcherQuery]);
+
+  const openHexEditor = useCallback((hex: LauncherHex) => {
+    setLauncherError(null);
+    setEditingHexId(hex.id);
+    setLauncherQuery("");
+    setLauncherDraft({ label: hex.label, appId: hex.appId });
+  }, []);
+
+  const closeHexEditor = useCallback(() => {
+    setEditingHexId(null);
+    setLauncherQuery("");
+  }, []);
+
+  const saveHexEditor = useCallback(() => {
+    if (!editingHexId) return;
+    const linkedApp = appById.get(launcherDraft.appId);
+    setLauncherHexes(prev => prev.map(hex => hex.id === editingHexId ? {
+      ...hex,
+      label: launcherDraft.label.trim() || linkedApp?.name || hex.label,
+      appId: launcherDraft.appId,
+    } : hex));
+    closeHexEditor();
+  }, [appById, closeHexEditor, editingHexId, launcherDraft]);
 
   return (
     <div className={`relative w-screen h-screen overflow-hidden ${phaseClass} ${SAFE_HUD ? "safe-hud" : ""}`} style={{ background: "#020617" }}>
@@ -870,6 +1140,15 @@ export default function Assistant() {
         .safe-hud .jarvis-panel{backdrop-filter:none; box-shadow: inset 0 0 0 1px rgba(34,211,238,0.04), 0 0 18px rgba(34,211,238,0.025)}
         .safe-hud .pulse,.safe-hud .core-g,.safe-hud .r3,.safe-hud .r4,.safe-hud .r5,.safe-hud .r6,.safe-hud .r-tick,.safe-hud .orbit-ring,.safe-hud .orbit-counter-rotate,.safe-hud .orb-float{animation:none !important}
         .safe-hud .scan-line{opacity:.35; animation-duration:24s}
+        .launcher-cluster{position:absolute; left:620px; top:218px; width:300px; height:312px}
+        .launcher-hex{clip-path:polygon(25% 0%,75% 0%,100% 50%,75% 100%,25% 100%,0 50%)}
+        .launcher-hex-shell{position:absolute; width:120px; height:104px}
+        .launcher-hex-button{width:120px; height:104px; transform:translateZ(0); transition:border-color .16s ease, background-color .16s ease, opacity .16s ease, transform .16s ease}
+        .launcher-hex-button:hover{opacity:1; transform:translateY(-2px)}
+        .launcher-icon-wrap{display:flex; align-items:center; justify-content:center; width:38px; height:38px; border-radius:12px; background:rgba(15,23,42,0.68); border:1px solid rgba(255,255,255,0.06)}
+        .launcher-icon{width:28px; height:28px; object-fit:contain; filter:drop-shadow(0 0 10px rgba(34,211,238,0.12))}
+        @media (max-width: 1500px){.launcher-cluster{left:580px; top:208px; transform:scale(.92); transform-origin:top left}}
+        @media (max-width: 1320px){.launcher-cluster{left:538px; top:196px; transform:scale(.82); transform-origin:top left}}
       `}</style>
 
       {/* ═══ BACKGROUND ═══ */}
@@ -1143,41 +1422,295 @@ export default function Assistant() {
 
       {/* ═══ ARC REACTOR — CENTERED ═══ */}
       <ReactorCore rc={rc} rc2={rc2} gd={gd} phaseLabel={phaseLabel} phaseAccent={phase === "listening" ? RD : AM} ticks={ticks} majorTicks={majorTicks} />
-      <AudioCanvas telemRef={audioTelemRef} phaseRef={phaseStrRef} />
+      <AudioCanvas telemRef={audioTelemRef} phaseRef={phaseStrRef} activatedAtRef={activatedAtRef} />
       <OrbitBadges orbitData={orbitData} rc={rc} gd={gd} />
 
-      {/* ═══ CHAT ═══ */}
-      {messages.length > 0 && (
-        <div className="absolute bottom-14 left-0 right-0 z-30 transition-all duration-300" style={{ maxHeight: chatExpanded ? "28%" : "0%" }}>
-          <button onClick={() => setChatExpanded(!chatExpanded)} className="absolute -top-6 left-1/2 -translate-x-1/2 px-4 py-0.5 rounded-t-lg text-[10px] font-bold tracking-widest z-30" style={{ backgroundColor: `${rc}10`, color: rc, border: `1px solid ${rc}20`, borderBottom: "none" }}>
-            <ChevronUp className={`w-3 h-3 inline-block mr-1 transition-transform ${chatExpanded ? "" : "rotate-180"}`} />{messages.length} NACHRICHTEN
-          </button>
-          <div className="overflow-y-auto h-full py-3 px-8 scrollbar-thin scrollbar-thumb-zinc-800" style={{ background: "linear-gradient(to bottom, rgba(2,6,23,0.95), rgba(2,6,23,0.98))", borderTop: `1px solid ${rc}15` }}>
-            <div className="space-y-2 max-w-3xl mx-auto">
-              {messages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role==="user"?"justify-end":"justify-start"}`}>
-                  <div className="max-w-[70%] rounded-lg px-3.5 py-2 flex gap-2.5" style={{ backgroundColor: msg.role==="user"?"rgba(96,165,250,0.06)":`${rc}08`, border: `1px solid ${msg.role==="user"?"rgba(96,165,250,0.1)":`${rc}10`}` }}>
-                    <div className="w-0.5 self-stretch rounded-full shrink-0" style={{ backgroundColor: msg.role==="user"?"#60a5fa":rc }} />
-                    <div className="min-w-0">
-                      <span className="text-[9px] font-black tracking-[0.2em]" style={{ color: msg.role==="user"?"#60a5fa80":`${rc}80` }}>{msg.role==="user"?"DU":"JARVIS"}</span>
-                      <p className="text-[13px] text-zinc-400 whitespace-pre-wrap leading-relaxed mt-0.5">{msg.content}</p>
-                      {msg.actions?.map((a,j) => <div key={j} className="flex items-center gap-1.5 text-[10px] mt-1"><Zap className={`w-2.5 h-2.5 ${a.success?"text-emerald-400":"text-red-400"}`}/><span className="text-zinc-600">{a.message}</span></div>)}
+      <div className="absolute inset-0 z-[14] pointer-events-none">
+        <div className="launcher-cluster">
+          {launcherHexes.map(hex => {
+            const linkedApp = appById.get(hex.appId);
+            return (
+              <div
+                key={hex.id}
+                className="launcher-hex-shell pointer-events-auto"
+                style={{ left: hex.x, top: hex.y }}
+              >
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => { void launchHex(hex); }}
+                  onKeyDown={event => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      void launchHex(hex);
+                    }
+                  }}
+                  className="launcher-hex launcher-hex-button group relative flex flex-col items-center justify-center overflow-hidden border"
+                  style={{
+                    background: "rgba(5, 16, 34, 0.76)",
+                    borderColor: `${hex.accent}3d`,
+                    boxShadow: "none",
+                    opacity: 0.96,
+                  }}
+                >
+                  <div className="absolute inset-[1px] launcher-hex" style={{ background: "rgba(2, 10, 24, 0.86)" }} />
+                  <div className="absolute inset-x-4 top-2 h-px" style={{ background: `linear-gradient(90deg, transparent, ${hex.accent}70, transparent)` }} />
+                  <button
+                    type="button"
+                    data-launcher-edit="true"
+                    onClick={event => {
+                      event.stopPropagation();
+                      openHexEditor(hex);
+                    }}
+                    className="absolute right-2 top-2 z-10 rounded border px-1 py-0.5 text-[8px] font-black tracking-[0.16em] text-zinc-300 transition hover:text-white"
+                    style={{ borderColor: `${hex.accent}35`, background: "rgba(2,6,23,0.68)" }}
+                  >
+                    E
+                  </button>
+                  <div className="relative z-[1] flex flex-col items-center px-2 text-center">
+                    <div className="launcher-icon-wrap">
+                      {desktopIconSrc(linkedApp) ? (
+                        <img
+                          src={desktopIconSrc(linkedApp) ?? undefined}
+                          alt={linkedApp?.name ?? hex.label}
+                          className="launcher-icon"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <span className="text-[16px] font-black uppercase" style={{ color: hex.accent }}>
+                          {hex.label.slice(0, 1)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-2 text-[13px] font-black leading-tight text-zinc-100">{hex.label}</div>
+                    <div className="mt-1 text-[8px] uppercase tracking-[0.16em] text-zinc-500">
+                      {linkedApp?.name ?? "Programm wählen"}
                     </div>
                   </div>
                 </div>
-              ))}
-              {loading && <div className="flex justify-start"><div className="rounded-lg px-3.5 py-2 flex gap-2.5" style={{ backgroundColor:`${rc}08`, border:`1px solid ${rc}10` }}><div className="w-0.5 self-stretch rounded-full" style={{ backgroundColor:rc }}/><div><span className="text-[9px] font-black tracking-[0.2em]" style={{ color:`${rc}80` }}>JARVIS</span><p className="text-[13px] text-zinc-700 mt-0.5 animate-pulse">Verarbeite...</p></div></div></div>}
-              <div ref={chatEndRef} />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {launcherError && (
+        <div className="fixed bottom-[68px] left-1/2 z-50 -translate-x-1/2 rounded-xl border px-4 py-2 text-[11px] font-medium text-red-200"
+          style={{ background: "rgba(127,29,29,0.82)", borderColor: "rgba(248,113,113,0.35)", boxShadow: "0 0 18px rgba(248,113,113,0.18)" }}>
+          {launcherError}
+        </div>
+      )}
+
+      {editingHex && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/72 backdrop-blur-sm">
+          <div className="w-[720px] max-w-[92vw] rounded-2xl border border-cyan-400/20 bg-slate-950/92 p-6 shadow-[0_0_50px_rgba(34,211,238,0.12)]">
+            <div className="flex items-start justify-between gap-6">
+              <div>
+                <div className="text-[11px] font-black uppercase tracking-[0.3em] text-cyan-300">Launcher Hex</div>
+                <h2 className="mt-2 text-2xl font-black text-zinc-100">Programm verknüpfen</h2>
+                <p className="mt-2 text-sm text-zinc-500">Name ändern, App auswählen und das Hexagon danach frei verschieben.</p>
+              </div>
+              <button type="button" onClick={closeHexEditor} className="rounded-lg border border-zinc-800 px-3 py-2 text-xs font-bold uppercase tracking-[0.2em] text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200">Schließen</button>
+            </div>
+
+            <div className="mt-6 grid gap-4 md:grid-cols-[220px,1fr]">
+              <div className="space-y-3">
+                <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-zinc-500">
+                  Titel
+                  <input
+                    type="text"
+                    value={launcherDraft.label}
+                    onChange={event => setLauncherDraft(prev => ({ ...prev, label: event.target.value }))}
+                    className="mt-2 w-full rounded-xl border border-zinc-800 bg-slate-900 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-cyan-400/40"
+                    placeholder="Hexagon Name"
+                  />
+                </label>
+                <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-zinc-500">
+                  Suche
+                  <input
+                    type="text"
+                    value={launcherQuery}
+                    onChange={event => setLauncherQuery(event.target.value)}
+                    className="mt-2 w-full rounded-xl border border-zinc-800 bg-slate-900 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-cyan-400/40"
+                    placeholder="Firefox, Steam, Code ..."
+                  />
+                </label>
+                <div className="rounded-xl border border-zinc-900 bg-slate-900/70 px-3 py-3 text-xs text-zinc-500">
+                  Aktuell: <span className="font-semibold text-zinc-300">{appById.get(launcherDraft.appId)?.name ?? "Kein Programm"}</span>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-zinc-900 bg-slate-900/70 p-3">
+                <div className="max-h-[360px] overflow-y-auto pr-1">
+                  <div className="grid gap-2">
+                    {filteredDesktopApps.map(app => {
+                      const selected = launcherDraft.appId === app.id;
+                      return (
+                        <button
+                          key={app.id}
+                          type="button"
+                          onClick={() => setLauncherDraft(prev => ({ ...prev, appId: app.id, label: prev.label || app.name }))}
+                          className="rounded-xl border px-4 py-3 text-left transition"
+                          style={{
+                            borderColor: selected ? "rgba(34,211,238,0.45)" : "rgba(39,39,42,0.9)",
+                            background: selected ? "rgba(8,47,73,0.55)" : "rgba(15,23,42,0.6)",
+                            boxShadow: selected ? "0 0 18px rgba(34,211,238,0.12)" : "none",
+                          }}
+                        >
+                          <div className="text-sm font-semibold text-zinc-100">{app.name}</div>
+                          <div className="mt-1 text-xs font-mono text-zinc-500">{app.id}</div>
+                          <div className="mt-1 text-[11px] text-zinc-600">{app.exec}</div>
+                        </button>
+                      );
+                    })}
+                    {filteredDesktopApps.length === 0 && (
+                      <div className="rounded-xl border border-dashed border-zinc-800 px-4 py-6 text-center text-sm text-zinc-500">
+                        Keine passende Anwendung gefunden.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={closeHexEditor} className="rounded-xl border border-zinc-800 px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100">Abbrechen</button>
+              <button type="button" onClick={saveHexEditor} className="rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-400/15">Speichern</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ═══ INPUT BAR ═══ */}
-      <div className="absolute bottom-0 left-0 right-0 z-30 px-8 pb-3 pt-2">
-        <div className="max-w-2xl mx-auto flex items-center gap-3 px-4 py-2.5 rounded-xl" style={{ border:`1px solid ${rc}18`, backgroundColor:"rgba(2,6,23,0.92)", boxShadow:`0 0 20px ${rc}06`, backdropFilter: SAFE_HUD ? "none" : "blur(8px)" }}>
-          <input ref={inputRef} type="text" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(input)}}} placeholder="Befehl eingeben..." className="flex-1 bg-transparent border-none outline-none text-sm text-zinc-300 placeholder:text-zinc-700" disabled={loading} />
-          <button onClick={()=>sendMessage(input)} disabled={!input.trim()||loading} className="p-2 rounded-lg transition-all" style={{ backgroundColor:input.trim()?`${rc}18`:"transparent" }}><Send className="w-4 h-4" style={{ color:input.trim()?rc:"#27272a" }}/></button>
+      {/* ═══ CHAT + INPUT — pinned to bottom, chat grows upward ═══ */}
+
+      {/* ── Input Bar — ALWAYS fixed at very bottom ── */}
+      <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[800px] z-40 pointer-events-none">
+        <div className="pointer-events-auto px-4 pb-3 pt-2">
+          <div
+            className="flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-300"
+            style={{
+              border: `1px solid ${rc}18`,
+              backgroundColor: "rgba(2,6,23,0.94)",
+              boxShadow: `0 0 20px ${rc}06, inset 0 0 20px ${rc}03`,
+              backdropFilter: SAFE_HUD ? "none" : "blur(8px)",
+            }}
+          >
+            <div className="w-1 h-4 rounded-full shrink-0" style={{ backgroundColor: `${rc}40` }} />
+            <input
+              ref={inputRef}
+              type="text"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(input); } }}
+              placeholder="Befehl eingeben..."
+              className="flex-1 bg-transparent border-none outline-none text-sm text-zinc-300 placeholder:text-zinc-700 font-mono"
+              disabled={loading}
+            />
+            <button
+              onClick={() => sendMessage(input)}
+              disabled={!input.trim() || loading}
+              className="p-2 rounded-lg transition-all duration-200"
+              style={{
+                backgroundColor: input.trim() ? `${rc}18` : "transparent",
+                boxShadow: input.trim() ? `0 0 10px ${rc}15` : "none",
+              }}
+            >
+              <Send className="w-4 h-4" style={{ color: input.trim() ? rc : "#27272a" }} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Chat panel — grows upward from above the input bar ── */}
+      <div
+        className="fixed left-1/2 -translate-x-1/2 w-full max-w-[800px] pointer-events-none transition-all duration-400 ease-in-out"
+        style={{ bottom: 76, zIndex: 35 }}
+      >
+        {/* Toggle */}
+        {messages.length > 0 && (
+          <div className="flex justify-center">
+            <button
+              onClick={() => setChatExpanded(!chatExpanded)}
+              className="pointer-events-auto px-5 py-1 rounded-t-lg text-[10px] font-black tracking-[0.25em] uppercase transition-all duration-300 hover:brightness-125"
+              style={{
+                backgroundColor: `${rc}0c`,
+                color: rc,
+                border: `1px solid ${rc}25`,
+                borderBottom: "none",
+                boxShadow: chatExpanded ? `0 -4px 20px ${rc}10` : "none",
+                textShadow: `0 0 8px ${rc}40`,
+              }}
+            >
+              <ChevronUp className={`w-3 h-3 inline-block mr-1.5 transition-transform duration-300 ${chatExpanded ? "" : "rotate-180"}`} />
+              {messages.length} NACHRICHTEN
+            </button>
+          </div>
+        )}
+
+        {/* Messages container */}
+        <div
+          className="pointer-events-auto overflow-hidden transition-all duration-400 ease-in-out"
+          style={{
+            maxHeight: chatExpanded ? 340 : 0,
+            opacity: chatExpanded ? 1 : 0,
+          }}
+        >
+          <div
+            className="overflow-y-auto px-6 py-3 scrollbar-thin scrollbar-thumb-zinc-800 flex flex-col-reverse"
+            style={{
+              maxHeight: 340,
+              background: `linear-gradient(180deg, ${rc}04 0%, rgba(2,6,23,0.97) 8%, rgba(2,6,23,0.98) 100%)`,
+              borderTop: `1px solid ${rc}20`,
+              borderLeft: `1px solid ${rc}10`,
+              borderRight: `1px solid ${rc}10`,
+              borderBottom: `1px solid ${rc}10`,
+              boxShadow: `inset 0 1px 30px ${rc}06, 0 -8px 30px rgba(0,0,0,0.5)`,
+            }}
+          >
+            <div className="space-y-2.5">
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className="max-w-[75%] rounded-lg px-3.5 py-2 flex gap-2.5 backdrop-blur-sm"
+                    style={{
+                      backgroundColor: msg.role === "user" ? "rgba(96,165,250,0.06)" : `${rc}08`,
+                      border: `1px solid ${msg.role === "user" ? "rgba(96,165,250,0.12)" : `${rc}12`}`,
+                      boxShadow: msg.role === "user" ? "0 0 12px rgba(96,165,250,0.04)" : `0 0 12px ${rc}04`,
+                    }}
+                  >
+                    <div className="w-0.5 self-stretch rounded-full shrink-0" style={{ backgroundColor: msg.role === "user" ? "#60a5fa" : rc, boxShadow: `0 0 6px ${msg.role === "user" ? "#60a5fa40" : `${rc}40`}` }} />
+                    <div className="min-w-0">
+                      <span className="text-[9px] font-black tracking-[0.2em]" style={{ color: msg.role === "user" ? "#60a5fa80" : `${rc}80` }}>{msg.role === "user" ? "DU" : "JARVIS"}</span>
+                      <p className="text-[13px] text-zinc-400 whitespace-pre-wrap leading-relaxed mt-0.5">{msg.content}</p>
+                      {msg.actions?.map((a, j) => (
+                        <div key={j} className="flex items-center gap-1.5 text-[10px] mt-1.5">
+                          <div className="w-1 h-1 rounded-full" style={{ backgroundColor: a.success ? "#34d399" : "#f87171", boxShadow: `0 0 4px ${a.success ? "#34d39960" : "#f8717160"}` }} />
+                          <Zap className={`w-2.5 h-2.5 ${a.success ? "text-emerald-400" : "text-red-400"}`} />
+                          <span className="text-zinc-600 font-mono">{a.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {loading && (
+                <div className="flex justify-start">
+                  <div className="rounded-lg px-3.5 py-2 flex gap-2.5" style={{ backgroundColor: `${rc}08`, border: `1px solid ${rc}12` }}>
+                    <div className="w-0.5 self-stretch rounded-full" style={{ backgroundColor: rc, boxShadow: `0 0 6px ${rc}40` }} />
+                    <div>
+                      <span className="text-[9px] font-black tracking-[0.2em]" style={{ color: `${rc}80` }}>JARVIS</span>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: rc }} />
+                        <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: rc, animationDelay: "150ms" }} />
+                        <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: rc, animationDelay: "300ms" }} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+          </div>
         </div>
       </div>
     </div>

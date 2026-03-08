@@ -103,7 +103,7 @@ export default function Lighting() {
   const Spin = () => <Loader2 className="w-3 h-3 animate-spin" />;
 
   return (
-    <div className="p-6 max-w-5xl space-y-8">
+    <div className="p-6 max-w-5xl mx-auto space-y-8">
       <PageHeader title="Lighting" description="RGB-Steuerung für alle Geräte" />
 
       {/* ── Control Bar ─────────────────────────────────── */}

@@ -156,7 +156,7 @@ export default function BootGuard() {
   }
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl">
+    <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <PageHeader
         title="Boot Guard"
         description="Überwachung und Schutz der Boot-Konfiguration"

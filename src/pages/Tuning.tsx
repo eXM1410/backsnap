@@ -106,7 +106,7 @@ export default function Tuning() {
   if (loading) return <div className="p-6"><Loading text="Lade System-Tuning..." /></div>;
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl">
+    <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <PageHeader
         title="System-Tuning"
         description={`${optimal}/${total} Einstellungen optimal`}

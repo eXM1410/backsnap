@@ -57,6 +57,14 @@ pub fn run() {
                     .build(),
             )?;
 
+            // Convenience symlink: /tmp/arclight.log → real plugin log
+            if let Some(log_dir) = app.path().app_log_dir().ok() {
+                let real_log = log_dir.join("arclight.log");
+                let link = std::path::PathBuf::from("/tmp/arclight.log");
+                let _ = std::fs::remove_file(&link);
+                let _ = std::os::unix::fs::symlink(&real_log, &link);
+            }
+
             // ── Tray Menu ──────────────────────────────────────────
             let handle = app.handle().clone();
             let show = MenuItemBuilder::with_id("show", "Arclight öffnen").build(&handle)?;
@@ -294,6 +302,8 @@ pub fn run() {
             govee_master_power,
             rgb_master_power,
             rgb_master_brightness,
+            list_desktop_apps,
+            launch_desktop_app,
             assistant_chat,
             assistant_status,
             jarvis_listener_enabled,
