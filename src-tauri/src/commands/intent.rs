@@ -157,6 +157,8 @@ fn parse_query(segment: &str) -> Option<ParsedSegment> {
             "gpu temperatur",
             "gpu temp",
             "wie warm ist die gpu",
+            "wie warmsige gpu",
+            "evam cpu",
             "gpu info",
             "vram",
             "wie viel vram",

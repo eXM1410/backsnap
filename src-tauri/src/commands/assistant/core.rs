@@ -692,18 +692,18 @@ fn execute_tool(call: &ToolCall) -> ActionResult {
                                 .map(|u| format!("{u:.0}%"))
                                 .unwrap_or_else(|| "n/a".into());
                             // Short label: "Raspberry Pi 5 Model B Rev 1.0" → "Pi 5"
-                            let short = if p.label.contains('5') {
+                            let short = if p.label.contains("Pi 5") {
                                 "Pi 5"
-                            } else if p.label.contains('4') {
+                            } else if p.label.contains("Pi 4") {
                                 "Pi 4"
                             } else {
                                 &p.label
                             };
                             format!("{short}: {temp}, CPU {cpu}")
                         } else {
-                            let short = if p.label.contains('5') {
+                            let short = if p.label.contains("Pi 5") {
                                 "Pi 5"
-                            } else if p.label.contains('4') {
+                            } else if p.label.contains("Pi 4") {
                                 "Pi 4"
                             } else {
                                 &p.label
