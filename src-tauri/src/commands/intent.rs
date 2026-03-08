@@ -53,6 +53,10 @@ pub(crate) fn try_fast_parse(input: &str) -> Option<(String, Vec<KeywordAction>)
 }
 
 fn parse_segment(segment: &str, inherited_scope: Option<Scope>) -> Option<ParsedSegment> {
+    if let Some(parsed) = parse_query(segment) {
+        return Some(parsed);
+    }
+
     if let Some(parsed) = parse_watering(segment) {
         return Some(parsed);
     }
@@ -94,6 +98,145 @@ fn parse_segment(segment: &str, inherited_scope: Option<Scope>) -> Option<Parsed
             actions,
         })
     }
+}
+
+/// Fast-parse common query commands so they bypass the LLM entirely.
+/// This also catches frequent Whisper misrecognitions (e.g. "Eistatus" for "Pi Status").
+fn parse_query(segment: &str) -> Option<ParsedSegment> {
+    // Pi Status (+ Whisper misrecognitions: "eistatus", "pistatus", "pie status")
+    if contains_any(
+        segment,
+        &[
+            "pi status",
+            "pistatus",
+            "eistatus",
+            "eis status",
+            "pie status",
+            "pi 4 status",
+            "pi 5 status",
+            "raspberry pi status",
+            "wie geht es dem pi",
+            "wie geht es den pis",
+            "pi temperatur",
+        ],
+    ) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Checking the Pis.".into(),
+            actions: vec![KeywordAction {
+                action: "pi_status".into(),
+                params: serde_json::json!({}),
+            }],
+        });
+    }
+
+    // System Status
+    if contains_any(
+        segment,
+        &[
+            "system status",
+            "systemstatus",
+            "system info",
+            "systeminfo",
+        ],
+    ) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Checking system status.".into(),
+            actions: vec![KeywordAction {
+                action: "system_status".into(),
+                params: serde_json::json!({}),
+            }],
+        });
+    }
+
+    // GPU Info
+    if contains_any(
+        segment,
+        &[
+            "gpu temperatur",
+            "gpu temp",
+            "wie warm ist die gpu",
+            "gpu info",
+            "vram",
+            "wie viel vram",
+        ],
+    ) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Checking GPU status.".into(),
+            actions: vec![KeywordAction {
+                action: "system_info".into(),
+                params: serde_json::json!({}),
+            }],
+        });
+    }
+
+    // Tent Status
+    if contains_any(
+        segment,
+        &[
+            "zelt status",
+            "zeltstatus",
+            "tankinhalt",
+            "wie voll ist der tank",
+            "wie warm ist das zelt",
+            "zelt temperatur",
+            "zelt luftfeuchtigkeit",
+        ],
+    ) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Checking the tent.".into(),
+            actions: vec![KeywordAction {
+                action: "tent_status".into(),
+                params: serde_json::json!({}),
+            }],
+        });
+    }
+
+    // Fan Status
+    if contains_any(
+        segment,
+        &[
+            "wie geht es den lueftern",
+            "luefterstatus",
+            "luefter status",
+            "fan status",
+            "wassertemperatur",
+        ],
+    ) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Checking fans.".into(),
+            actions: vec![KeywordAction {
+                action: "fan_status".into(),
+                params: serde_json::json!({}),
+            }],
+        });
+    }
+
+    // Snapshot List
+    if contains_any(
+        segment,
+        &[
+            "snapshot liste",
+            "zeig die snapshots",
+            "wie viele snapshots",
+            "snapshot uebersicht",
+        ],
+    ) {
+        return Some(ParsedSegment {
+            scope: None,
+            reply: "Checking snapshots.".into(),
+            actions: vec![KeywordAction {
+                action: "snapshot_list".into(),
+                params: serde_json::json!({}),
+            }],
+        });
+    }
+
+    None
 }
 
 fn parse_watering(segment: &str) -> Option<ParsedSegment> {
